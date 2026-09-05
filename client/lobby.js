@@ -63,7 +63,7 @@
         window.dispatchEvent(new CustomEvent('kitchen-handover-warning', { detail: { text } }));
       }
       if (message.type === 'player-state') window.dispatchEvent(new CustomEvent('kitchen-player-state', { detail: message }));
-      if (message.type === 'shift-ended') { inGame = false; spectating = true; byId('macro-panel').classList.add('hidden'); window.dispatchEvent(new Event('kitchen-spectate')); }
+      if (message.type === 'shift-ended') { inGame = false; spectating = true; lobby.classList.add('hidden'); byId('app').classList.remove('hidden'); byId('overlay').classList.add('hidden'); byId('macro-panel').classList.add('hidden'); window.dispatchEvent(new Event('kitchen-spectate')); }
       if (message.type === 'session-finished') { finished = true; }
       if (message.type === 'session-ended') { inGame = false; window.kitchenSession = { connected: false, send: () => false }; lobbyMessage.textContent = 'Server ended this session. Live notes were cleared.'; lobby.classList.remove('hidden'); byId('app').classList.add('hidden'); }
     });
@@ -72,9 +72,10 @@
   function showFinalSummary(state) {
     finished = true; spectating = false; inGame = false;
     lobby.classList.add('hidden'); byId('app').classList.add('hidden'); byId('macro-panel').classList.add('hidden');
-    const names = state.macros?.map(macro => macro.name).join(', ') || 'None';
+    window.dispatchEvent(new Event('kitchen-session-finished'));
+    byId('notes-modal').classList.add('hidden'); byId('macro-modal').classList.add('hidden');
     const overlay = byId('overlay'); overlay.classList.remove('hidden');
-    overlay.innerHTML = `<h1>Session Complete</h1><p><strong>Final score: ${state.score}</strong><br><strong>Missed plates: ${state.missed}</strong><br>Notes created: ${state.notes?.length || 0}<br>Macrofunctions: ${names}</p>`;
+    overlay.innerHTML = `<h1>Session Complete</h1><p><strong>Final score: ${state.score}</strong><br><strong>Missed orders: ${state.missed}</strong><br>Notes remaining: ${state.notes?.length || 0}<br>Macros remaining: ${state.macros?.length || 0}</p>`;
   }
   function join(action) { send({ type: 'join-room', action, name: byId('player-name').value, roomId: byId('meeting-id').value }); }
   byId('create-room-btn').addEventListener('click', () => join('create'));

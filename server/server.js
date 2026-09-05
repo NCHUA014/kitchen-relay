@@ -51,6 +51,8 @@ function leaveRoom(player) {
   const room = player?.room;
   if (!room) return;
   room.players = room.players.filter(item => item !== player);
+  room.activePlayerIds = room.activePlayerIds.filter(id => id !== player.id);
+  if (room.status !== 'waiting') room.disconnectedPlayers.set(player.name.toLowerCase(), player);
   if (room.hostId === player.id && room.players.length) room.hostId = room.players[0].id;
   player.room = null;
   console.log(`[${room.id}] ${player.name} left (${room.players.length}/${MAX_PLAYERS})`);
@@ -73,15 +75,30 @@ function joinRoom(ws, message) {
   } else {
     room = rooms.get(String(message.roomId || '').trim().toUpperCase());
     if (!room) return send(ws, { type: 'error', message: 'Meeting ID not found.' });
-    if (room.status !== 'waiting') return send(ws, { type: 'error', message: 'This session has already started.' });
+    if (room.status !== 'waiting' && !room.disconnectedPlayers?.has(name.toLowerCase())) return send(ws, { type: 'error', message: 'This session has already started. Rejoin using your original display name.' });
   }
+  room.disconnectedPlayers ||= new Map();
+  if (room.players.some(member => member.name.toLowerCase() === name.toLowerCase())) return send(ws, { type: 'error', message: 'That display name is already connected.' });
   if (room.players.length >= MAX_PLAYERS) return send(ws, { type: 'error', message: 'This waiting room is full.' });
-  const player = { id: nextPlayerId++, name, ws, room };
+  const returning = room.disconnectedPlayers.get(name.toLowerCase());
+  const player = returning || { id: nextPlayerId++, name };
+  player.ws = ws; player.room = room;
+  room.disconnectedPlayers.delete(name.toLowerCase());
   ws.player = player;
   room.players.push(player);
   if (!room.hostId) room.hostId = player.id;
   console.log(`[${room.id}] ${name} joined (${room.players.length}/${MAX_PLAYERS})`);
   broadcastRoom(room);
+  if (returning && room.status === 'active') {
+    advanceRoom(room);
+    const slot = room.schedule.find(item => item.playerId === player.id);
+    if (slot?.ended) send(ws, { type: 'shift-ended' });
+    else if (slot?.entered) {
+      if (!room.activePlayerIds.includes(player.id)) room.activePlayerIds.push(player.id);
+      broadcastRoom(room);
+      send(ws, { type: 'enter-game', roomId: room.id });
+    }
+  }
 }
 
 wss.on('connection', ws => {
@@ -93,6 +110,7 @@ wss.on('connection', ws => {
     const player = ws.player;
     if (!player?.room) return send(ws, { type: 'error', message: 'Join a room first.' });
     const room = player.room;
+    if (room.status === 'finished') return;
     if (message.type === 'note-create') {
       const text = String(message.text || '').trim().slice(0, 500);
       if (!text) return;
@@ -242,21 +260,20 @@ function advanceRoom(room) {
   updateTickets(room, now);
   room.schedule.forEach(slot => {
     const player = room.players.find(member => member.id === slot.playerId);
-    if (!player) return;
-    if (!slot.warned && now >= slot.startAt - WARNING_SECONDS * 1000 && slot.startAt > room.startedAt) {
+    if (player && !slot.warned && now >= slot.startAt - WARNING_SECONDS * 1000 && slot.startAt > room.startedAt) {
       slot.warned = true;
       console.log(`[${room.id}] warning: ${player.name} enters in one minute.`);
       broadcastEvent(room, { type: 'handover-warning', playerId: player.id, playerName: player.name, startsAt: slot.startAt });
     }
-    if (!slot.entered && now >= slot.startAt) {
+    if (player && !slot.entered && now >= slot.startAt && now < slot.endAt) {
       slot.entered = true; room.activePlayerIds.push(player.id);
       console.log(`[${room.id}] ${player.name} entered the kitchen.`);
       send(player.ws, { type: 'enter-game', roomId: room.id }); broadcastRoom(room);
     }
     if (!slot.ended && now >= slot.endAt) {
-      slot.ended = true; room.activePlayerIds = room.activePlayerIds.filter(id => id !== player.id);
-      console.log(`[${room.id}] ${player.name}'s shift ended.`);
-      send(player.ws, { type: 'shift-ended' }); broadcastRoom(room);
+      slot.ended = true; room.activePlayerIds = room.activePlayerIds.filter(id => id !== slot.playerId);
+      if (player) send(player.ws, { type: 'shift-ended' });
+      broadcastRoom(room);
     }
   });
   broadcastRoom(room);
@@ -265,6 +282,7 @@ function advanceRoom(room) {
   }
 }
 function startSession(room, host) {
+  if (room.status !== 'waiting') return;
   room.status = 'active'; room.startedAt = Date.now(); room.activePlayerIds = [];
   room.schedule = room.players.map((player, index) => {
     const startAt = room.startedAt + index * (SHIFT_SECONDS - OVERLAP_SECONDS) * 1000;

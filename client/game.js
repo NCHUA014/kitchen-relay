@@ -86,11 +86,11 @@
     player.gc = COLS - 2 - (index % 2); player.gr = ROWS - 2 - Math.floor(index / 2);
     player.x = player.gc * CELL + CELL / 2; player.y = player.gr * CELL + CELL / 2;
     publishPlayerState();
-    running = true; lastT = performance.now();
+    spectating = false; running = true; lastT = performance.now();
   });
   window.addEventListener('kitchen-player-state', event => {
     const state = event.detail;
-    if (state.playerId !== window.kitchenSession?.state?.you) remotePlayers.set(state.playerId, state);
+    if (state.playerId !== window.kitchenSession?.state?.you && window.kitchenSession?.state?.activePlayerIds?.includes(state.playerId)) remotePlayers.set(state.playerId, state);
   });
   let moveCooldown = 0; // seconds until the next single-square step is allowed
   const keys = {};
@@ -206,7 +206,7 @@
     notes = event.detail.notes || [];
     score = event.detail.score || 0; missed = event.detail.missed || 0;
     tickets = event.detail.tickets || [];
-    remotePlayers.forEach((_, id) => { if (!event.detail.activePlayerIds?.includes(id)) remotePlayers.delete(id); });
+    remotePlayers.forEach((_, id) => { if (!event.detail.activePlayerIds?.includes(id) || !event.detail.players.some(member => member.id === id)) remotePlayers.delete(id); });
     if (Array.isArray(event.detail.macros)) { macros = event.detail.macros; renderMacros(); }
     applySharedBuns(event.detail.buns);
     applySharedIngredients(event.detail.ingredients);
@@ -446,6 +446,7 @@
   let spawnTimer = 5;
   let running = false;
   let spectating = false;
+  window.addEventListener('kitchen-session-finished', () => { running = false; spectating = false; });
   window.addEventListener('kitchen-spectate', () => {
     running = false; spectating = true;
     document.getElementById('msg').textContent = 'Spectator view — live score, missed orders, and kitchen activity.';
