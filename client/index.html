@@ -3,115 +3,34 @@
 <head>
 <meta charset="UTF-8">
 <title>Kitchen Relay</title>
-<style>
-  :root {
-    --bg: #1b1410;
-    --panel: #2a1f18;
-    --floor: #d8c4a0;
-    --floor-line: #c4ad82;
-    --counter: #6b4a35;
-    --counter-top: #8a6248;
-    --accent: #e0763a;
-    --accent-dim: #a85a2c;
-    --good: #7fb069;
-    --bad: #c1443c;
-    --ink: #f2e6d5;
-    --ink-dim: #b8a687;
-  }
-  * { box-sizing: border-box; }
-  html, body {
-    margin: 0; height: 100%; background: var(--bg);
-    font-family: 'Courier New', monospace;
-    color: var(--ink);
-    overflow: hidden;
-    display: flex; align-items: center; justify-content: center;
-  }
-  #app {
-    display: flex; flex-direction: column; align-items: center;
-    gap: 10px;
-    padding: 16px;
-  }
-  #hud {
-    width: 900px;
-    display: flex; justify-content: space-between; align-items: center;
-    background: var(--panel);
-    border: 2px solid var(--counter-top);
-    border-radius: 8px;
-    padding: 10px 18px;
-  }
-  .hud-block { display: flex; flex-direction: column; align-items: center; min-width: 90px; }
-  .hud-label { font-size: 11px; letter-spacing: 2px; color: var(--ink-dim); text-transform: uppercase; }
-  .hud-value { font-size: 26px; font-weight: bold; color: var(--accent); }
-  #hud-title { font-size: 18px; letter-spacing: 3px; text-transform: uppercase; color: var(--ink); }
-  #tickets {
-    width: 900px;
-    display: flex; gap: 10px; min-height: 78px;
-  }
-  .ticket {
-    background: #f2e6d5; color: #2a1f18;
-    border-radius: 4px; padding: 8px 12px;
-    width: 150px; position: relative;
-    box-shadow: 0 3px 0 #b8a687;
-    font-size: 12px;
-  }
-  .ticket .name { font-weight: bold; font-size: 13px; margin-bottom: 4px; }
-  .ticket .bar-bg { background: #d8c4a0; height: 5px; border-radius: 3px; margin-top: 6px; overflow: hidden; }
-  .ticket .bar-fill { height: 100%; background: var(--good); }
-  #play-area { display: flex; gap: 14px; align-items: flex-start; }
-  #canvas-wrap { position: relative; border: 3px solid var(--counter-top); border-radius: 6px; overflow: hidden; }
-  canvas { display: block; background: var(--floor); }
-  #rules {
-    background: var(--panel);
-    border: 1px solid var(--counter-top);
-    border-radius: 6px;
-    padding: 12px 14px;
-    font-size: 11px; line-height: 1.8;
-    color: var(--ink);
-    width: 150px;
-    flex-shrink: 0;
-  }
-  #rules .rules-title {
-    font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
-    color: var(--accent); margin-bottom: 4px;
-  }
-  #rules .rules-title:not(:first-child) { margin-top: 12px; }
-  #rules kbd {
-    background: #3a2a1f; border: 1px solid #574031; border-radius: 3px;
-    padding: 0 5px; font-size: 10px; color: var(--ink);
-  }
-  #msg {
-    width: 900px; text-align: center; font-size: 13px; color: var(--ink-dim);
-    min-height: 18px;
-  }
-  #overlay {
-    position: fixed; inset: 0; background: rgba(20,14,10,0.92);
-    display: flex; align-items: center; justify-content: center;
-    flex-direction: column; gap: 14px;
-    text-align: center;
-  }
-  #overlay h1 { font-size: 36px; letter-spacing: 4px; color: var(--accent); margin: 0; }
-  #overlay p { color: var(--ink-dim); max-width: 460px; line-height: 1.6; font-size: 14px; }
-  button {
-    font-family: inherit; font-size: 15px; letter-spacing: 1px;
-    background: var(--accent); color: #241811; border: none;
-    padding: 12px 26px; border-radius: 6px; cursor: pointer;
-    text-transform: uppercase; font-weight: bold;
-  }
-  button:hover { background: #f08a4b; }
-  .hidden { display: none !important; }
-  kbd {
-    background: #3a2a1f; border: 1px solid #574031; border-radius: 3px;
-    padding: 1px 6px; font-size: 12px; color: var(--ink);
-  }
-</style>
+<link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<div id="app">
+<main id="welcome-screen" class="welcome-screen">
+  <section class="welcome-card">
+    <h1>Kitchen Relay</h1><p>Build a team, share the kitchen knowledge, and take turns in the heat.</p>
+    <label for="player-name">Display name</label><input id="player-name" maxlength="24" placeholder="Your name">
+    <button id="create-room-btn" type="button">Create session</button>
+    <div class="join-divider">or join a team</div>
+    <label for="meeting-id">Meeting ID</label><input id="meeting-id" maxlength="16" placeholder="KITCHEN-ABCD">
+    <button id="join-room-btn" type="button">Join session</button>
+    <p id="connection-status" class="screen-status">Connecting to server…</p>
+  </section>
+</main>
+
+<main id="lobby-screen" class="lobby-screen hidden">
+  <section class="lobby-card"><div class="lobby-heading"><div><span>Meeting ID</span><h1 id="lobby-room-id">—</h1></div><span id="lobby-status">Waiting room</span></div>
+  <div class="lobby-grid"><section><h2>Players <span id="lobby-count"></span></h2><ol id="lobby-players"></ol><button id="start-session-btn" class="hidden" type="button">Start session</button></section><section><h2>Team notes</h2><div id="lobby-notes"></div></section></div>
+  <p id="lobby-elapsed" class="screen-status"></p><p id="lobby-message" class="screen-status"></p></section>
+</main>
+
+<div id="app" class="hidden">
   <div id="hud">
     <div id="hud-title">Kitchen Relay</div>
     <div class="hud-block"><span class="hud-label">Score</span><span class="hud-value" id="score">0</span></div>
-    <div class="hud-block"><span class="hud-label">Time</span><span class="hud-value" id="time">10:00</span></div>
+    <div class="hud-block"><span class="hud-label">Time</span><span class="hud-value" id="time">3:00</span></div>
     <div class="hud-block"><span class="hud-label">Missed</span><span class="hud-value" id="missed">0</span></div>
+    <button id="notesBtn" class="notes-button" type="button">Notes</button>
   </div>
   <div id="tickets"></div>
   <div id="play-area">
@@ -136,7 +55,50 @@
   <div id="msg">WASD move · Shift sprint · E pick up / drop at station · Q throw · Space plate & serve</div>
 </div>
 
-<div id="overlay">
+<aside id="macro-panel" class="hidden" aria-label="Saved macros">
+  <div class="macro-panel-header"><span>Macros</span><button id="openMacroCreatorBtn" type="button">+ Create</button></div>
+  <p id="macro-empty">No saved macros.</p>
+  <div id="macro-list"></div>
+</aside>
+
+<div id="notes-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="notes-title">
+  <section class="notepad" role="document">
+    <div class="notepad-header">
+      <div>
+        <h2 id="notes-title">Kitchen Notepad</h2>
+        <span>Shared notes by Player 1</span>
+      </div>
+      <button id="closeNotesBtn" class="icon-button" type="button" aria-label="Close notepad">×</button>
+    </div>
+    <label for="new-note">New entry</label>
+    <textarea id="new-note" maxlength="500" placeholder="Write a note for the kitchen team..."></textarea>
+    <div class="notepad-actions">
+      <span id="note-status" aria-live="polite"></span>
+      <button id="saveNoteBtn" type="button">Save entry</button>
+    </div>
+    <div id="notes-list" aria-live="polite"></div>
+  </section>
+</div>
+
+<div id="macro-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="macro-title">
+  <section class="notepad macro-creator" role="document">
+    <div class="notepad-header">
+      <div>
+        <h2 id="macro-title">Create macro</h2>
+        <span>Record an action sequence directly from your keyboard.</span>
+      </div>
+      <button id="closeMacroCreatorBtn" class="icon-button" type="button" aria-label="Close macro creator">×</button>
+    </div>
+    <label for="macro-name">Macro name</label>
+    <input id="macro-name" maxlength="40" placeholder="e.g. Grab tomato">
+    <label>Keyboard recording</label>
+    <div id="macro-recording-status" class="macro-recording-status" aria-live="polite">Type a name, then press Enter to start recording.</div>
+    <div id="macro-sequence" class="macro-sequence" aria-live="polite">No actions selected.</div>
+    <p class="macro-help">While recording, use <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> <kbd>Q</kbd> <kbd>E</kbd> and <kbd>Space</kbd>. Use <kbd>←</kbd> and <kbd>→</kbd> to move the cursor, and <kbd>Backspace</kbd> to remove the action before it. Press <kbd>Enter</kbd> when done. Use the Notes panel to explain a macro to other players.</p>
+  </section>
+</div>
+
+<div id="overlay" class="hidden">
   <h1>Kitchen Relay</h1>
   <p>
     Chop, cook, and plate orders before time runs out.<br><br>
@@ -151,498 +113,7 @@
   <button id="startBtn">Start shift</button>
 </div>
 
-<script>
-(() => {
-  const canvas = document.getElementById('game');
-  const ctx = canvas.getContext('2d');
-  const CELL = 52;
-  const COLS = Math.floor(canvas.width / CELL);
-  const ROWS = Math.floor(canvas.height / CELL);
-
-  // ---------- Grid / stations ----------
-  // Types: 'floor','counter','crate','board','stove','plates','serve','trash'
-  // Every edge tile is a solid 'counter' by default (you can set items down on
-  // any of them). Specific stations below overwrite particular edge tiles.
-  const grid = [];
-  for (let r = 0; r < ROWS; r++) {
-    const row = [];
-    for (let c = 0; c < COLS; c++) {
-      const edge = r === 0 || r === ROWS - 1 || c === 0 || c === COLS - 1;
-      row.push({ type: edge ? 'counter' : 'floor', item: null });
-    }
-    grid.push(row);
-  }
-  function setStation(c, r, type) { grid[r][c].type = type; }
-
-  setStation(2, 0, 'crate_tomato');
-  setStation(4, 0, 'crate_lettuce');
-  setStation(6, 0, 'crate_bun');
-
-  setStation(2, ROWS - 1, 'board');
-  setStation(3, ROWS - 1, 'board');
-  setStation(5, ROWS - 1, 'stove');
-  setStation(6, ROWS - 1, 'stove');
-
-  setStation(11, 0, 'plates');
-  setStation(0, 5, 'trash');
-  setStation(COLS - 1, 5, 'serve');
-
-  const ingredientColors = {
-    tomato: '#c1443c', lettuce: '#7fb069', bun: '#d9a05b', patty: '#6b3f2a'
-  };
-
-  // ---------- Player ----------
-  // The player now occupies a single grid cell (gc, gr) and steps one square
-  // at a time, chess-board style, rather than sliding continuously.
-  const player = {
-    gc: COLS - 2, gr: ROWS - 2, // innermost floor tile nearest the bottom-right corner
-    x: 0, y: 0, // pixel center of (gc, gr), kept in sync every frame — used for rendering/interactions
-    dir: { x: 0, y: 1 },
-    holding: null, // {kind:'ingredient'|'plate', ...}
-  };
-  player.x = player.gc * CELL + CELL / 2;
-  player.y = player.gr * CELL + CELL / 2;
-  let moveCooldown = 0; // seconds until the next single-square step is allowed
-  const keys = {};
-
-  window.addEventListener('keydown', e => {
-    keys[e.key.toLowerCase()] = true;
-    if (e.key === ' ') e.preventDefault();
-  });
-  window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
-
-  function cellAt(px, py) {
-    const c = Math.floor(px / CELL), r = Math.floor(py / CELL);
-    if (r < 0 || r >= ROWS || c < 0 || c >= COLS) return null;
-    return { c, r, cell: grid[r][c] };
-  }
-
-  function facingCell() {
-    const fx = player.x + player.dir.x * CELL * 0.75;
-    const fy = player.y + player.dir.y * CELL * 0.75;
-    return cellAt(fx, fy);
-  }
-
-  function isSolid(type) {
-    return type !== 'floor';
-  }
-
-  // Snap the player's (possibly diagonal) facing vector to a single grid axis,
-  // used for stepping the throw across whole cells.
-  function cardinalDir() {
-    if (Math.abs(player.dir.x) > Math.abs(player.dir.y)) return { x: Math.sign(player.dir.x), y: 0 };
-    if (player.dir.y !== 0) return { x: 0, y: Math.sign(player.dir.y) };
-    return { x: 0, y: 1 };
-  }
-
-  function tryStep(dc, dr) {
-    const targetC = player.gc + dc, targetR = player.gr + dr;
-    if (targetR < 0 || targetR >= ROWS || targetC < 0 || targetC >= COLS) return;
-    if (isSolid(grid[targetR][targetC].type)) return;
-    player.gc = targetC; player.gr = targetR;
-    player.x = player.gc * CELL + CELL / 2;
-    player.y = player.gr * CELL + CELL / 2;
-  }
-
-  // ---------- Recipes / Tickets ----------
-  const RECIPES = [
-    { name: 'Tomato Plate', needs: ['tomato'], points: 40, time: 32 },
-    { name: 'Garden Salad', needs: ['tomato', 'lettuce'], points: 70, time: 42 },
-    { name: 'Veggie Bun', needs: ['bun', 'lettuce'], points: 60, time: 38 },
-  ];
-
-  let tickets = [];
-  let score = 0;
-  let missed = 0;
-  let timeLeft = 600; // 10 min shift
-  let spawnTimer = 5;
-  let running = false;
-
-  function spawnTicket() {
-    if (tickets.length >= 4) return;
-    const r = RECIPES[Math.floor(Math.random() * RECIPES.length)];
-    tickets.push({ ...r, remaining: r.time });
-  }
-
-  function updateTickets(dt) {
-    spawnTimer -= dt;
-    if (spawnTimer <= 0) { spawnTicket(); spawnTimer = 9 + Math.random() * 6; }
-    tickets.forEach(t => t.remaining -= dt);
-    const before = tickets.length;
-    tickets = tickets.filter(t => {
-      if (t.remaining <= 0) { missed++; return false; }
-      return true;
-    });
-  }
-
-  function renderTickets() {
-    const el = document.getElementById('tickets');
-    el.innerHTML = '';
-    tickets.forEach(t => {
-      const pct = Math.max(0, t.remaining / t.time) * 100;
-      const div = document.createElement('div');
-      div.className = 'ticket';
-      div.innerHTML = `<div class="name">${t.name}</div>
-        <div>${t.needs.join(' + ')}</div>
-        <div class="bar-bg"><div class="bar-fill" style="width:${pct}%; background:${pct < 30 ? 'var(--bad)' : 'var(--good)'}"></div></div>`;
-      el.appendChild(div);
-    });
-  }
-
-  function completeOrder(contents) {
-    const sorted = [...contents].sort().join(',');
-    const idx = tickets.findIndex(t => [...t.needs].sort().join(',') === sorted);
-    if (idx >= 0) {
-      score += tickets[idx].points;
-      flashMsg(`Served ${tickets[idx].name}! +${tickets[idx].points}`, 'good');
-      tickets.splice(idx, 1);
-      return true;
-    }
-    flashMsg('No matching order for that plate.', 'bad');
-    return false;
-  }
-
-  // ---------- Actions ----------
-  let msgTimer = 0;
-  function flashMsg(text, tone) {
-    const el = document.getElementById('msg');
-    el.textContent = text;
-    el.style.color = tone === 'good' ? 'var(--good)' : tone === 'bad' ? 'var(--bad)' : 'var(--ink-dim)';
-    msgTimer = 2.2;
-  }
-
-  function handleAction(key) {
-    if (!running) return;
-    const f = facingCell();
-    if (!f) return;
-    const type = f.cell.type;
-
-    if (key === 'e') {
-      if (type.startsWith('crate_')) {
-        const ing = type.split('_')[1];
-        if (!player.holding) {
-          player.holding = { kind: 'ingredient', item: ing, chopped: false };
-          flashMsg(`Picked up raw ${ing}.`);
-        }
-      } else if (type === 'plates') {
-        if (!player.holding) {
-          player.holding = { kind: 'plate', contents: [] };
-          flashMsg('Grabbed a clean plate.');
-        }
-      } else if (type === 'board') {
-        if (player.holding && player.holding.kind === 'ingredient' && !f.cell.item) {
-          f.cell.item = player.holding; player.holding = null;
-          flashMsg('Placed ingredient on the board. Press E again to chop.');
-        } else if (f.cell.item && !player.holding) {
-          if (!f.cell.item.chopped) {
-            f.cell.item.chopped = true;
-            flashMsg('Chopped! Press E to pick it back up.');
-          } else {
-            player.holding = f.cell.item;
-            f.cell.item = null;
-          }
-        }
-      } else if (type === 'stove') {
-        if (player.holding && player.holding.kind === 'ingredient' && !f.cell.item) {
-          f.cell.item = player.holding; player.holding = null;
-          f.cell.item.cookStart = performance.now();
-          flashMsg('Cooking...');
-        } else if (f.cell.item && !player.holding) {
-          const cookedEnough = performance.now() - (f.cell.item.cookStart || 0) > 1500;
-          if (cookedEnough) {
-            player.holding = f.cell.item;
-            f.cell.item = null;
-          } else {
-            flashMsg('Still cooking.', 'bad');
-          }
-        }
-      } else if (type === 'trash') {
-        if (player.holding) { player.holding = null; flashMsg('Tossed it — gone for good.'); }
-      } else if (type === 'counter') {
-        if (player.holding && !f.cell.item) {
-          f.cell.item = player.holding;
-          player.holding = null;
-          flashMsg('Set it down on the counter.');
-        } else if (f.cell.item && !player.holding) {
-          player.holding = f.cell.item;
-          f.cell.item = null;
-          flashMsg('Picked it back up.');
-        }
-      } else if (type === 'floor') {
-        if (f.cell.item && !player.holding) {
-          player.holding = f.cell.item;
-          f.cell.item = null;
-          flashMsg('Picked it up off the floor.');
-        }
-      } else if (type === 'serve') {
-        // handled by space
-      }
-    }
-
-    if (key === ' ') {
-      if (type === 'serve' && player.holding && player.holding.kind === 'plate') {
-        if (player.holding.contents.length > 0) {
-          const ok = completeOrder(player.holding.contents);
-          if (ok) player.holding = null;
-        } else {
-          flashMsg('Plate is empty.', 'bad');
-        }
-      } else if (player.holding && player.holding.kind === 'ingredient') {
-        // put onto a plate we're facing (plate must be an item somewhere) - simplified: combine when holding plate
-      } else if (player.holding && player.holding.kind === 'plate') {
-        flashMsg('Walk to a station holding a chopped ingredient, then face your plate to load it.');
-      }
-    }
-
-    if (key === 'q') {
-      if (player.holding) {
-        const thrown = player.holding;
-        const dir = cardinalDir();
-        const startC = Math.floor(player.x / CELL);
-        const startR = Math.floor(player.y / CELL);
-        const maxDist = 3;
-        let landC = null, landR = null;
-        for (let d = 1; d <= maxDist; d++) {
-          const c = startC + dir.x * d;
-          const r = startR + dir.y * d;
-          if (r < 0 || r >= ROWS || c < 0 || c >= COLS) break;
-          const cell = grid[r][c];
-          const canLand = (cell.type === 'floor' || cell.type === 'counter') && !cell.item;
-          if (canLand) { landC = c; landR = r; }
-          else break; // blocked by a wall/station/occupied tile - stops here
-        }
-        if (landC === null) {
-          flashMsg("Nowhere clear to throw it — kept it in hand.", 'bad');
-        } else {
-          grid[landR][landC].item = thrown;
-          player.holding = null;
-          flashMsg('Threw it — it landed on the floor.');
-        }
-      }
-    }
-  }
-
-  // loading ingredient onto plate: when holding ingredient and pressing E while "plate" is the thing held is impossible;
-  // simpler rule: if holding a plate and facing a board/stove with a finished chopped/cooked item, E loads it onto the plate.
-  const origHandle = handleAction;
-  function handleActionWrapped(key) {
-    if (key === 'e' && running) {
-      const f = facingCell();
-      if (f && player.holding && player.holding.kind === 'plate') {
-        const type = f.cell.type;
-        if (type.startsWith('crate_')) {
-          const ing = type.split('_')[1];
-          player.holding.contents.push(ing);
-          flashMsg(`Added raw ${ing} to plate.`);
-          return;
-        }
-        if (['board', 'stove', 'counter', 'floor'].includes(type) && f.cell.item && f.cell.item.kind === 'ingredient') {
-          const readyChopped = type === 'board' && f.cell.item.chopped;
-          const readyCooked = type === 'stove' && (performance.now() - (f.cell.item.cookStart || 0) > 1500);
-          const readyPlain = type === 'counter' || type === 'floor';
-          if (readyChopped || readyCooked || readyPlain) {
-            player.holding.contents.push(f.cell.item.item);
-            f.cell.item = null;
-            flashMsg(`Added ${player.holding.contents[player.holding.contents.length-1]} to plate.`);
-            return;
-          }
-        }
-      }
-    }
-    origHandle(key);
-  }
-
-  // ---------- Render ----------
-  function stationColor(type) {
-    if (type === 'floor') return null;
-    if (type === 'counter') return '#7a5a42';
-    if (type.startsWith('crate_')) return '#8a6248';
-    if (type === 'board') return '#c9a876';
-    if (type === 'stove') return '#5a4a44';
-    if (type === 'plates') return '#e8e0d0';
-    if (type === 'serve') return '#e0763a';
-    if (type === 'trash') return '#3a2a24';
-    return '#8a6248';
-  }
-
-  // Draws a held/placed item (ingredient or plate) centered at (cx, cy),
-  // offset upward by yOffset so it reads as "sitting on" a station icon.
-  function drawItemIcon(itemObj, cx, cy, yOffset) {
-    if (itemObj.kind === 'plate') {
-      ctx.fillStyle = '#e8e0d0';
-      ctx.beginPath(); ctx.arc(cx, cy - yOffset, 8, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = '#b8a687'; ctx.lineWidth = 1; ctx.stroke();
-      itemObj.contents.forEach((c, i) => {
-        ctx.fillStyle = ingredientColors[c] || '#fff';
-        ctx.beginPath(); ctx.arc(cx - 4 + i * 4, cy - yOffset, 2.5, 0, Math.PI * 2); ctx.fill();
-      });
-    } else {
-      ctx.fillStyle = ingredientColors[itemObj.item] || '#fff';
-      ctx.beginPath(); ctx.arc(cx, cy - yOffset, 8, 0, Math.PI * 2); ctx.fill();
-    }
-  }
-
-  function draw() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    // floor grid
-    for (let r = 0; r < ROWS; r++) {
-      for (let c = 0; c < COLS; c++) {
-        const cell = grid[r][c];
-        const x = c * CELL, y = r * CELL;
-        if (cell.type === 'floor') {
-          ctx.fillStyle = (r + c) % 2 === 0 ? '#d8c4a0' : '#d3bd96';
-          ctx.fillRect(x, y, CELL, CELL);
-          if (cell.item) drawItemIcon(cell.item, x + CELL / 2, y + CELL / 2, 0);
-        } else {
-          ctx.fillStyle = stationColor(cell.type);
-          ctx.fillRect(x, y, CELL, CELL);
-          ctx.strokeStyle = 'rgba(0,0,0,0.15)';
-          ctx.strokeRect(x, y, CELL, CELL);
-          if (cell.type === 'counter' && !cell.item) {
-            ctx.strokeStyle = 'rgba(242,230,213,0.25)';
-            ctx.setLineDash([3, 3]);
-            ctx.strokeRect(x + 6, y + 6, CELL - 12, CELL - 12);
-            ctx.setLineDash([]);
-          }
-          drawStationIcon(cell, x, y);
-        }
-      }
-    }
-    drawPlayer();
-  }
-
-  function drawStationIcon(cell, x, y) {
-    const cx = x + CELL / 2, cy = y + CELL / 2;
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.font = '11px monospace';
-    ctx.fillStyle = '#f2e6d5';
-    if (cell.type.startsWith('crate_')) {
-      const ing = cell.type.split('_')[1];
-      ctx.fillStyle = ingredientColors[ing] || '#fff';
-      ctx.beginPath(); ctx.arc(cx, cy, 12, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#f2e6d5';
-      ctx.fillText(ing[0].toUpperCase(), cx, cy + CELL/2 - 8);
-    } else if (cell.type === 'board') {
-      ctx.fillText('BOARD', cx, cy);
-    } else if (cell.type === 'stove') {
-      ctx.fillText('STOVE', cx, cy);
-    } else if (cell.type === 'plates') {
-      ctx.fillText('PLATES', cx, cy);
-    } else if (cell.type === 'serve') {
-      ctx.fillText('SERVE', cx, cy);
-    } else if (cell.type === 'trash') {
-      ctx.fillText('TRASH', cx, cy);
-    }
-    if (cell.item) {
-      drawItemIcon(cell.item, cx, cy, 14);
-      if (cell.type === 'board' && cell.item.kind === 'ingredient' && cell.item.chopped) {
-        ctx.fillStyle = '#2a1f18'; ctx.font = '9px monospace';
-        ctx.fillText('chopped', cx, cy - 26);
-      }
-      if (cell.type === 'stove' && cell.item.kind === 'ingredient') {
-        const done = performance.now() - (cell.item.cookStart || 0) > 1500;
-        ctx.fillStyle = '#2a1f18'; ctx.font = '9px monospace';
-        ctx.fillText(done ? 'done' : 'cooking', cx, cy - 26);
-      }
-    }
-  }
-
-  function drawPlayer() {
-    ctx.save();
-    ctx.translate(player.x, player.y);
-    ctx.fillStyle = '#e0763a';
-    ctx.beginPath(); ctx.arc(0, 0, 15, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = '#2a1f18'; ctx.lineWidth = 2; ctx.stroke();
-    // facing indicator
-    ctx.fillStyle = '#2a1f18';
-    ctx.beginPath();
-    ctx.arc(player.dir.x * 12, player.dir.y * 12, 4, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-
-    if (player.holding) {
-      const hx = player.x + player.dir.x * 20, hy = player.y + player.dir.y * 20 - 10;
-      if (player.holding.kind === 'plate') {
-        ctx.fillStyle = '#e8e0d0';
-        ctx.beginPath(); ctx.arc(hx, hy, 10, 0, Math.PI * 2); ctx.fill();
-        ctx.strokeStyle = '#b8a687'; ctx.stroke();
-        player.holding.contents.forEach((c, i) => {
-          ctx.fillStyle = ingredientColors[c] || '#fff';
-          ctx.beginPath(); ctx.arc(hx - 5 + i * 5, hy, 3, 0, Math.PI * 2); ctx.fill();
-        });
-      } else {
-        ctx.fillStyle = ingredientColors[player.holding.item] || '#fff';
-        ctx.beginPath(); ctx.arc(hx, hy, 8, 0, Math.PI * 2); ctx.fill();
-      }
-    }
-  }
-
-  // ---------- Loop ----------
-  let lastT = performance.now();
-  function loop(t) {
-    const dt = Math.min(0.05, (t - lastT) / 1000);
-    lastT = t;
-    if (running) {
-      update(dt);
-      draw();
-    }
-    requestAnimationFrame(loop);
-  }
-
-  function update(dt) {
-    let dx = 0, dy = 0;
-    if (keys['w']) dy = -1;
-    else if (keys['s']) dy = 1;
-    else if (keys['a']) dx = -1;
-    else if (keys['d']) dx = 1;
-
-    if (dx !== 0 || dy !== 0) {
-      player.dir = { x: dx, y: dy };
-      moveCooldown -= dt;
-      if (moveCooldown <= 0) {
-        tryStep(dx, dy);
-        moveCooldown = keys['shift'] ? 0.11 : 0.19; // sprint steps faster, square by square
-      }
-    } else {
-      moveCooldown = 0; // next key press moves immediately, no queued delay
-    }
-
-    timeLeft -= dt;
-    if (timeLeft <= 0) { timeLeft = 0; endGame(); }
-    updateTickets(dt);
-
-    msgTimer -= dt;
-    if (msgTimer <= 0) document.getElementById('msg').style.color = 'var(--ink-dim)';
-
-    document.getElementById('score').textContent = score;
-    document.getElementById('missed').textContent = missed;
-    const mm = Math.floor(timeLeft / 60), ss = Math.floor(timeLeft % 60);
-    document.getElementById('time').textContent = `${mm}:${ss.toString().padStart(2,'0')}`;
-    renderTickets();
-  }
-
-  function endGame() {
-    running = false;
-    const overlay = document.getElementById('overlay');
-    overlay.classList.remove('hidden');
-    overlay.innerHTML = `<h1>Shift Over</h1>
-      <p>Final score: <strong style="color:var(--accent)">${score}</strong><br>Missed orders: ${missed}</p>
-      <button id="restartBtn">Run it back</button>`;
-    document.getElementById('restartBtn').addEventListener('click', () => location.reload());
-  }
-
-  document.getElementById('startBtn').addEventListener('click', () => {
-    document.getElementById('overlay').classList.add('hidden');
-    running = true;
-    lastT = performance.now();
-  });
-
-  window.addEventListener('keydown', e => {
-    if (['e','q',' '].includes(e.key.toLowerCase())) handleActionWrapped(e.key.toLowerCase());
-  });
-
-  requestAnimationFrame(loop);
-})();
-</script>
+<script src="lobby.js"></script>
+<script src="game.js"></script>
 </body>
 </html>
