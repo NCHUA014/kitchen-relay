@@ -9,7 +9,7 @@
     <div class="rules-title">Controls</div>
     <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move</div>
     <div><kbd>E</kbd> Interact</div>
-    <div><kbd>Q</kbd> Throw or drop</div>
+    <div><kbd>Q</kbd> Throw or drop; a loaded plate ejects its latest item</div>
     <div><kbd>Space</kbd> Serve at the window</div>
     <div class="rules-title">Goal</div>
     <div>Serve matching tickets before they expire.</div>
@@ -84,6 +84,7 @@
   let sharedBuns = [];
   let sharedIngredients = [];
   let sharedPlates = [];
+  let serverClockOffset = 0;
   const remotePlayers = new Map();
   function playerColor(playerId) {
     const index = window.kitchenSession?.state?.players?.findIndex(item => item.id === playerId) ?? 0;
@@ -236,6 +237,7 @@
     saveNotes(); newNoteInput.value = ''; noteStatus.textContent = 'Saved.'; renderNotes();
   });
   window.addEventListener('kitchen-room-state', event => {
+    serverClockOffset = Number(event.detail.serverNow || Date.now()) - Date.now();
     if (event.detail.stage && event.detail.stage !== activeStageId) loadStageMap(event.detail.stage, event.detail.bridgeRow);
     else if (event.detail.stage >= 4) updateMovingBridge(event.detail.bridgeRow);
     document.getElementById('stage').textContent = event.detail.stageName || `Stage ${event.detail.stage || 1}`;
@@ -535,7 +537,8 @@
       const pct = Math.max(0, remaining / t.time) * 100;
       const div = document.createElement('div');
       div.className = 'ticket';
-      const ingredientLine = activeStageId >= 3 ? '' : `<div>${t.needs.join(' + ')}</div>`;
+      const displayedIngredients = t.displayNeeds || t.needs || [];
+      const ingredientLine = activeStageId >= 3 ? '' : `<div>${displayedIngredients.join(' + ')}</div>`;
       div.innerHTML = `<div class="name">${t.name}</div>
         ${ingredientLine}
         <div class="bar-bg"><div class="bar-fill" style="width:${pct}%; background:${pct < 30 ? 'var(--bad)' : 'var(--good)'}"></div></div>`;
@@ -662,7 +665,10 @@
 
     if (key === 'q') {
       if (player.holding) {
-        const thrown = player.holding;
+        const removingFromPlate = player.holding.kind === 'plate' && player.holding.contents.length > 0;
+        const thrown = removingFromPlate
+          ? { kind: 'ingredient', item: player.holding.contents[player.holding.contents.length - 1] }
+          : player.holding;
         const dir = cardinalDir();
         const startC = Math.floor(player.x / CELL);
         const startR = Math.floor(player.y / CELL);
@@ -681,7 +687,8 @@
           flashMsg("Nowhere clear to throw it — kept it in hand.", 'bad');
         } else {
           grid[landR][landC].item = thrown;
-          player.holding = null;
+          if (removingFromPlate) player.holding.contents.pop();
+          else player.holding = null;
           flashMsg('Threw it — it landed on the floor.');
         }
       }
@@ -744,7 +751,7 @@
       if (key === 'q' && player.holding?.sharedPlate) {
         const target = sharedThrowTarget();
         if (!target) { flashMsg('Nowhere clear to throw it.', 'bad'); return; }
-        if (activeStageId >= 2 && player.holding.contents.length) window.kitchenSession.send({ type: 'plate-remove-item', plateId: player.holding.sharedItemId, ...target });
+        if (player.holding.contents.length) window.kitchenSession.send({ type: 'plate-remove-item', plateId: player.holding.sharedItemId, ...target });
         else window.kitchenSession.send({ type: 'plate-drop', itemId: player.holding.sharedItemId, ...target });
         return;
       }
@@ -814,6 +821,11 @@
         ctx.strokeStyle = itemObj.cookedSides >= 2 ? '#3f261b' : '#f2e6d5';
         ctx.lineWidth = 2; ctx.stroke();
       }
+      if (itemObj.processEndsAt && itemObj.processStartedAt) {
+        const progress = Math.max(0, Math.min(1, ((Date.now() + serverClockOffset) - itemObj.processStartedAt) / (itemObj.processEndsAt - itemObj.processStartedAt)));
+        ctx.strokeStyle = '#f5d04c'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(cx, cy - yOffset, 12, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2); ctx.stroke();
+      }
     }
   }
 
@@ -847,7 +859,7 @@
       drawItemIcon({ kind: 'ingredient', item: 'bun' }, bun.c * CELL + CELL / 2, bun.r * CELL + CELL / 2, 0);
     });
     sharedIngredients.filter(item => item.holderId === null && Number.isInteger(item.c) && Number.isInteger(item.r)).forEach(item => {
-      drawItemIcon({ kind: 'ingredient', item: item.item }, item.c * CELL + CELL / 2, item.r * CELL + CELL / 2, 0);
+      drawItemIcon({ kind: 'ingredient', ...item }, item.c * CELL + CELL / 2, item.r * CELL + CELL / 2, 0);
     });
     sharedPlates.filter(plate => plate.holderId === null && Number.isInteger(plate.c) && Number.isInteger(plate.r)).forEach(plate => {
       drawItemIcon({ kind: 'plate', contents: plate.contents }, plate.c * CELL + CELL / 2, plate.r * CELL + CELL / 2, 0);
@@ -889,7 +901,8 @@
     } else if (cell.type === 'serve') {
       if (!labelsHidden) ctx.fillText('SERVE', cx, cy);
     } else if (cell.type === 'trash') {
-      if (!labelsHidden) ctx.fillText('TRASH', cx, cy);
+      if (labelsHidden) { ctx.font = '22px sans-serif'; ctx.fillText('🗑️', cx, cy); }
+      else ctx.fillText('TRASH', cx, cy);
     } else if (cell.type === 'bridge') {
       ctx.fillStyle = '#2a1f18'; ctx.fillText('BRIDGE', cx, cy);
     }

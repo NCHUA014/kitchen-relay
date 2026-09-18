@@ -17,12 +17,16 @@ const TURN_PLAN = [
 const MAX_PLAYERS = 4;
 const SHIFT_SECONDS = Number(process.env.SHIFT_SECONDS || 180);
 const WARNING_SECONDS = 60;
+const PREPARATION_MS = 1500;
 const STAGE_ONE_RECIPES = [
-  { name: 'Tomato Plate', needs: ['tomato'], points: 40, time: 32 },
-  { name: 'Garden Salad', needs: ['tomato', 'lettuce'], points: 70, time: 42 },
-  { name: 'Veggie Bun', needs: ['bun', 'lettuce'], points: 60, time: 38 },
+  { name: 'Garden Salad', needs: ['tomato', 'lettuce'], displayNeeds: ['chopped lettuce', 'chopped tomato'], points: 70, time: 42 },
+  { name: 'Vegan Burger', needs: ['bun', 'tomato', 'lettuce'], displayNeeds: ['chopped lettuce', 'chopped tomato', 'bun'], points: 90, time: 48 },
 ];
-const STAGE_TWO_RECIPES = [...STAGE_ONE_RECIPES, { name: 'Burger', needs: ['bun', 'chicken', 'tomato', 'lettuce'], points: 120, time: 55 }];
+const STAGE_TWO_RECIPES = [
+  { name: 'Garden Salad', needs: ['tomato', 'lettuce'], displayNeeds: [], points: 70, time: 42 },
+  { name: 'Vegan Burger', needs: ['bun', 'tomato', 'lettuce'], displayNeeds: [], points: 90, time: 48 },
+  { name: 'Chicken Burger', needs: ['bun', 'chicken', 'tomato', 'lettuce'], displayNeeds: ['vegan burger', 'grilled chicken'], points: 120, time: 55 },
+];
 const STAGE_FIVE_RECIPES = STAGE_TWO_RECIPES.map(recipe => ({
   ...recipe,
   needs: recipe.needs.map(item => item === 'lettuce' ? 'pickle' : item),
@@ -54,8 +58,8 @@ function send(ws, message) {
 
 function bridgeRow(room, now = Date.now()) {
   if (room.stage !== 4 && room.stage !== 5) return null;
-  const phase = Math.floor(Math.max(0, now - room.stageStartedAt) / 3000) % 4;
-  return [3, 5, 7, 5][phase];
+  const phase = Math.floor(Math.max(0, now - room.stageStartedAt) / 2000) % 8;
+  return [3, 4, 5, 6, 7, 6, 5, 4][phase];
 }
 
 function roomState(room, player) {
@@ -65,7 +69,7 @@ function roomState(room, player) {
     players: room.players.map(({ id, name }) => ({ id, name })), notes: room.notes, macros: room.macros,
     stage: room.stage, stageName: STAGES[room.stage]?.name || 'Stage', bridgeRow: bridgeRow(room), customerMessage: room.customerMessage || '',
     score: room.score, missed: room.missed, buns: room.buns, ingredients: room.ingredients, plates: room.plates,
-    tickets: room.stage >= 3 ? room.tickets.map(({ needs, ...ticket }) => ticket) : room.tickets,
+    tickets: room.stage >= 3 ? room.tickets.map(({ needs, displayNeeds, ...ticket }) => ticket) : room.tickets,
     schedule: room.schedule || [], serverNow: Date.now(),
   };
 }
@@ -75,7 +79,7 @@ function broadcastRoom(room) {
 }
 
 function rawIngredient(item, holderId = null, c = null, r = null) {
-  return { id: null, item, holderId, c, r, chopped: false, cookedSides: 0, station: null };
+  return { id: null, item, holderId, c, r, chopped: false, cookedSides: 0, station: null, processing: null, processStartedAt: null, processEndsAt: null };
 }
 
 function plateIngredient(item) {
@@ -236,10 +240,16 @@ wss.on('connection', ws => {
       const ingredient = room.ingredients.find(entry => entry.holderId === null && entry.c === c && entry.r === r && entry.station === String(message.station || ''));
       if (!ingredient || !room.activePlayerIds.includes(player.id)) return;
       if (ingredient.station === 'board' && ['tomato', 'lettuce', 'pickle'].includes(ingredient.item)) {
-        if (!ingredient.chopped) { ingredient.chopped = true; room.customerMessage = 'The ingredient looks different now.'; }
+        if (ingredient.processing) return broadcastRoom(room);
+        if (!ingredient.chopped) {
+          ingredient.processing = 'chop'; ingredient.processStartedAt = Date.now(); ingredient.processEndsAt = ingredient.processStartedAt + PREPARATION_MS;
+        }
         else { ingredient.holderId = player.id; ingredient.c = null; ingredient.r = null; ingredient.station = null; }
       } else if (ingredient.station === 'stove' && ingredient.item === 'chicken') {
-        if (ingredient.cookedSides < 2) { ingredient.cookedSides += 1; room.customerMessage = ingredient.cookedSides === 1 ? 'The chicken changed on one side.' : 'The chicken changed again.'; }
+        if (ingredient.processing) return broadcastRoom(room);
+        if (ingredient.cookedSides < 2) {
+          ingredient.processing = 'grill'; ingredient.processStartedAt = Date.now(); ingredient.processEndsAt = ingredient.processStartedAt + PREPARATION_MS;
+        }
         else { ingredient.holderId = player.id; ingredient.c = null; ingredient.r = null; ingredient.station = null; }
       }
       return broadcastRoom(room);
@@ -295,7 +305,7 @@ wss.on('connection', ws => {
     if (message.type === 'plate-remove-item') {
       const plate = room.plates.find(item => item.id === Number(message.plateId) && item.holderId === player.id);
       const c = Number(message.c), r = Number(message.r);
-      if (room.stage < 2 || !plate || !plate.contents.length || !Number.isInteger(c) || !Number.isInteger(r) || objectAt(room, c, r)) return;
+      if (!plate || !plate.contents.length || !Number.isInteger(c) || !Number.isInteger(r) || objectAt(room, c, r)) return;
       const contents = plateIngredient(plate.contents.pop());
       if (contents.item === 'bun') room.buns.push({ id: room.nextBunId++, holderId: null, c, r });
       else { const ingredient = rawIngredient(contents.item, null, c, r); ingredient.id = room.nextIngredientId++; ingredient.chopped = contents.chopped; ingredient.cookedSides = contents.cookedSides; room.ingredients.push(ingredient); }
@@ -312,15 +322,13 @@ wss.on('connection', ws => {
       const contents = plate.contents.map(plateIngredient).map(item => item.item).sort().join(',');
       const index = room.tickets.findIndex(ticket => ticket.needs.slice().sort().join(',') === contents);
       if (index < 0) { room.customerMessage = 'That is not what I ordered.'; return broadcastRoom(room); }
-      if (room.stage >= 2) {
-        const prepared = plate.contents.map(plateIngredient);
-        const chicken = prepared.find(item => item.item === 'chicken');
-        const tomato = prepared.find(item => item.item === 'tomato');
-        const greens = prepared.find(item => item.item === (room.stage === 5 ? 'pickle' : 'lettuce'));
-        if (chicken && chicken.cookedSides < 2) { room.customerMessage = chicken.cookedSides === 1 ? 'Why is it cold on one side?' : 'Chicken still smells, yuck!'; return broadcastRoom(room); }
-        if (tomato && !tomato.chopped) { room.customerMessage = "Tomato still looks round. Can't fit that in a burger, can ya?"; return broadcastRoom(room); }
-        if (greens && !greens.chopped) { room.customerMessage = room.stage === 5 ? 'Pickle slices are still too large to fit into a burger.' : 'Lettuce is still too large to fit into a burger.'; return broadcastRoom(room); }
-      }
+      const prepared = plate.contents.map(plateIngredient);
+      const chicken = prepared.find(item => item.item === 'chicken');
+      const tomato = prepared.find(item => item.item === 'tomato');
+      const greens = prepared.find(item => item.item === (room.stage === 5 ? 'pickle' : 'lettuce'));
+      if (chicken && chicken.cookedSides < 2) { room.customerMessage = chicken.cookedSides === 1 ? 'Why is it cold on one side?' : 'Chicken still smells, yuck!'; return broadcastRoom(room); }
+      if (tomato && !tomato.chopped) { room.customerMessage = "Tomato still looks round. Can't fit that in a burger, can ya?"; return broadcastRoom(room); }
+      if (greens && !greens.chopped) { room.customerMessage = room.stage === 5 ? 'Pickle slices are still too large to fit into a burger.' : 'Lettuce is still too large to fit into a burger.'; return broadcastRoom(room); }
       const ticket = room.tickets.splice(index, 1)[0]; room.score += ticket.points;
       room.plates.splice(room.plates.indexOf(plate), 1);
       room.customerMessage = ':) Perfect — thank you!';
@@ -368,8 +376,21 @@ function updateTickets(room, now) {
   const remaining = room.tickets.filter(ticket => ticket.expiresAt <= now);
   if (remaining.length) { room.missed += remaining.length; room.tickets = room.tickets.filter(ticket => ticket.expiresAt > now); }
 }
+function updateIngredientTimers(room, now) {
+  room.ingredients.forEach(ingredient => {
+    if (!ingredient.processing || ingredient.processEndsAt > now) return;
+    if (ingredient.processing === 'chop') {
+      ingredient.chopped = true; room.customerMessage = 'The ingredient looks different now.';
+    } else if (ingredient.processing === 'grill') {
+      ingredient.cookedSides += 1;
+      room.customerMessage = ingredient.cookedSides === 1 ? 'The chicken changed on one side.' : 'The chicken changed again.';
+    }
+    ingredient.processing = null; ingredient.processStartedAt = null; ingredient.processEndsAt = null;
+  });
+}
 function advanceRoom(room) {
   const now = Date.now();
+  updateIngredientTimers(room, now);
   updateTickets(room, now);
   room.schedule.forEach(slot => {
     const player = room.players.find(member => member.id === slot.playerId);
@@ -405,7 +426,8 @@ function startSession(room, host) {
   loadStage(room, room.schedule[0].stageId, room.startedAt);
   console.log(`[${room.id}] session started by ${host.name}; ${room.players[0].name} is first.`);
   advanceRoom(room);
-  room.timer = setInterval(() => advanceRoom(room), 1000);
+  // Short ticks keep preparation completion close to the visible 1.5s arc.
+  room.timer = setInterval(() => advanceRoom(room), 250);
 }
 
 function shutdown() {
