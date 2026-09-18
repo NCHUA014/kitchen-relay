@@ -54,6 +54,7 @@
         if (message.status === 'finished') showFinalSummary(message);
       }
       if (message.type === 'error') { status.textContent = message.message; lobbyMessage.textContent = message.message; }
+      if (message.type === 'action-rejected') window.dispatchEvent(new CustomEvent('kitchen-action-rejected', { detail: message }));
       if (message.type === 'enter-game') { inGame = true; lobby.classList.add('hidden'); byId('app').classList.remove('hidden'); byId('macro-panel').classList.remove('hidden'); byId('overlay').classList.add('hidden'); window.dispatchEvent(new Event('kitchen-enter-game')); }
       if (message.type === 'handover-warning') {
         const text = message.playerId === window.kitchenSession.state?.you

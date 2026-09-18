@@ -27,6 +27,7 @@
 <div id="app" class="hidden">
   <div id="hud">
     <div id="hud-title">Kitchen Relay</div>
+    <div class="hud-block"><span class="hud-label">Stage</span><span class="hud-value" id="stage">Stage 1</span></div>
     <div class="hud-block"><span class="hud-label">Score</span><span class="hud-value" id="score">0</span></div>
     <div class="hud-block"><span class="hud-label">Time</span><span class="hud-value" id="time">3:00</span></div>
     <div class="hud-block"><span class="hud-label">Missed</span><span class="hud-value" id="missed">0</span></div>
@@ -38,12 +39,12 @@
       <div class="rules-title">Controls</div>
       <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move<br>
       <kbd>Shift</kbd> sprint<br>
-      <kbd>E</kbd> pick up / chop / cook / load<br>
+      <kbd>E</kbd> interact<br>
       <kbd>Q</kbd> throw<br>
       <kbd>Space</kbd> serve at window
       <div class="rules-title">Goal</div>
-      Chop or cook ingredients, load onto a plate, match the order ticket, deliver before time runs out.
-      <div class="rules-title">Tips</div>
+      Complete the visible tickets and deliver plates before time runs out.
+      <div class="rules-title">Notes and macros</div>
       Any dashed-edge counter can hold an item — press <kbd>E</kbd> to set it down or pick it back up.<br><br>
       <kbd>Q</kbd> throws whatever you're holding — it lands on the floor ahead so it can be picked back up.<br><br>
       The only way to discard something for good is <kbd>E</kbd> at the trash bin.
@@ -51,6 +52,7 @@
     <div id="canvas-wrap">
       <canvas id="game" width="900" height="520"></canvas>
     </div>
+    <aside id="customer-speech" aria-live="polite"><span>Customer</span><p id="customer-message">Waiting for an order.</p><p id="stage-note" class="hidden">Note:<br>Pickles may replace lettuce in every known recipe</p></aside>
   </div>
   <div id="msg">WASD move · Shift sprint · E pick up / drop at station · Q throw · Space plate & serve</div>
 </div>

@@ -4,6 +4,19 @@
   const CELL = 52;
   const COLS = Math.floor(canvas.width / CELL);
   const ROWS = Math.floor(canvas.height / CELL);
+  const rulesPanel = document.getElementById('rules');
+  rulesPanel.innerHTML = `
+    <div class="rules-title">Controls</div>
+    <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move</div>
+    <div><kbd>E</kbd> Interact</div>
+    <div><kbd>Q</kbd> Throw or drop</div>
+    <div><kbd>Space</kbd> Serve at the window</div>
+    <div class="rules-title">Goal</div>
+    <div>Serve matching tickets before they expire.</div>
+    <div class="rules-title">Notes</div>
+    <div>Open Notes to read discoveries from earlier agents or leave a handover note.</div>
+    <div class="rules-title">Macros</div>
+    <div>Create, edit, or delete saved keyboard sequences for later agents.</div>`;
 
   // ---------- Grid / stations ----------
   // Types: 'floor','counter','crate','board','stove','plates','serve','trash'
@@ -19,22 +32,42 @@
     grid.push(row);
   }
   function setStation(c, r, type) { grid[r][c].type = type; }
-
-  setStation(2, 0, 'crate_tomato');
-  setStation(4, 0, 'crate_lettuce');
-  setStation(6, 0, 'crate_bun');
-
-  setStation(2, ROWS - 1, 'board');
-  setStation(3, ROWS - 1, 'board');
-  setStation(5, ROWS - 1, 'stove');
-  setStation(6, ROWS - 1, 'stove');
-
-  setStation(11, 0, 'plates');
-  setStation(0, 5, 'trash');
-  setStation(COLS - 1, 5, 'serve');
+  let activeStageId = 1;
+  let currentBridgeRow = null;
+  function updateMovingBridge(row) {
+    if (activeStageId < 4 || !Number.isInteger(row) || row === currentBridgeRow) return;
+    for (let r = 1; r < ROWS - 1; r++) setStation(8, r, 'abyss');
+    setStation(8, row, 'bridge');
+    currentBridgeRow = row;
+  }
+  function loadStageMap(stageId, initialBridgeRow = null) {
+    activeStageId = stageId;
+    grid.forEach((row, r) => row.forEach((cell, c) => {
+      const edge = r === 0 || r === ROWS - 1 || c === 0 || c === COLS - 1;
+      cell.type = edge ? 'counter' : 'floor'; cell.item = null;
+    }));
+    if (stageId === 3 || stageId === 4 || stageId === 5) {
+      // The kitchen is split into two islands. Stage 3 has a fixed crossing;
+      // Stage 4 moves that same crossing on the server's shared clock.
+      setStation(2, 0, 'crate_tomato'); setStation(4, 0, stageId === 5 ? 'crate_pickle' : 'crate_lettuce'); setStation(6, 0, 'crate_bun'); setStation(7, 0, 'crate_chicken');
+      setStation(10, 0, 'board'); setStation(11, 0, 'board'); setStation(13, 0, 'stove'); setStation(14, 0, 'stove');
+      setStation(11, ROWS - 1, 'plates'); setStation(0, 5, 'trash'); setStation(COLS - 1, 5, 'serve');
+      for (let r = 1; r < ROWS - 1; r++) setStation(8, r, 'abyss');
+      if (stageId === 3) setStation(8, 5, 'bridge');
+      else { currentBridgeRow = null; updateMovingBridge(initialBridgeRow ?? 3); }
+    } else {
+      // Stage 2 deliberately preserves every Stage 1 location.
+      setStation(2, 0, 'crate_tomato'); setStation(4, 0, 'crate_lettuce'); setStation(6, 0, 'crate_bun');
+      setStation(2, ROWS - 1, 'board'); setStation(3, ROWS - 1, 'board');
+      setStation(5, ROWS - 1, 'stove'); setStation(6, ROWS - 1, 'stove');
+      setStation(11, 0, 'plates'); setStation(0, 5, 'trash'); setStation(COLS - 1, 5, 'serve');
+      if (stageId === 2) setStation(8, 0, 'crate_chicken');
+    }
+  }
+  loadStageMap(1);
 
   const ingredientColors = {
-    tomato: '#c1443c', lettuce: '#7fb069', bun: '#d9a05b', patty: '#6b3f2a'
+    tomato: '#c1443c', lettuce: '#7fb069', pickle: '#779c43', bun: '#d9a05b', patty: '#6b3f2a', chicken: '#e8b18a'
   };
 
   // ---------- Player ----------
@@ -70,7 +103,7 @@
   function applySharedIngredients(ingredients) {
     sharedIngredients = Array.isArray(ingredients) ? ingredients : [];
     const mine = sharedIngredients.find(item => item.holderId === window.kitchenSession?.state?.you);
-    if (mine && (!player.holding || player.holding.sharedIngredient)) player.holding = { kind: 'ingredient', item: mine.item, sharedIngredient: true, sharedItemId: mine.id };
+    if (mine && (!player.holding || player.holding.sharedIngredient)) player.holding = { kind: 'ingredient', item: mine.item, chopped: mine.chopped, cookedSides: mine.cookedSides, sharedIngredient: true, sharedItemId: mine.id };
     if (!mine && player.holding?.sharedIngredient) player.holding = null;
     publishPlayerState();
   }
@@ -203,6 +236,11 @@
     saveNotes(); newNoteInput.value = ''; noteStatus.textContent = 'Saved.'; renderNotes();
   });
   window.addEventListener('kitchen-room-state', event => {
+    if (event.detail.stage && event.detail.stage !== activeStageId) loadStageMap(event.detail.stage, event.detail.bridgeRow);
+    else if (event.detail.stage >= 4) updateMovingBridge(event.detail.bridgeRow);
+    document.getElementById('stage').textContent = event.detail.stageName || `Stage ${event.detail.stage || 1}`;
+    document.getElementById('customer-message').textContent = event.detail.customerMessage || 'Waiting for an order.';
+    document.getElementById('stage-note').classList.toggle('hidden', event.detail.stage !== 5);
     notes = event.detail.notes || [];
     score = event.detail.score || 0; missed = event.detail.missed || 0;
     tickets = event.detail.tickets || [];
@@ -411,7 +449,7 @@
   }
 
   function isSolid(type) {
-    return type !== 'floor';
+    return type !== 'floor' && type !== 'bridge';
   }
 
   // Snap the player's (possibly diagonal) facing vector to a single grid axis,
@@ -420,6 +458,25 @@
     if (Math.abs(player.dir.x) > Math.abs(player.dir.y)) return { x: Math.sign(player.dir.x), y: 0 };
     if (player.dir.y !== 0) return { x: 0, y: Math.sign(player.dir.y) };
     return { x: 0, y: 1 };
+  }
+
+  function sharedObjectAt(c, r) {
+    return sharedBuns.some(item => item.holderId === null && item.c === c && item.r === r)
+      || sharedIngredients.some(item => item.holderId === null && item.c === c && item.r === r)
+      || sharedPlates.some(item => item.holderId === null && item.c === c && item.r === r);
+  }
+
+  function sharedThrowTarget() {
+    const dir = cardinalDir();
+    let target = null;
+    for (let distance = 1; distance <= 3; distance++) {
+      const c = player.gc + dir.x * distance, r = player.gr + dir.y * distance;
+      if (r < 0 || r >= ROWS || c < 0 || c >= COLS) break;
+      if (!['floor', 'counter', 'bridge'].includes(grid[r][c].type)) break;
+      if (activeStageId >= 2 && sharedObjectAt(c, r)) break;
+      target = { c, r };
+    }
+    return target;
   }
 
   function tryStep(dc, dr) {
@@ -478,18 +535,23 @@
       const pct = Math.max(0, remaining / t.time) * 100;
       const div = document.createElement('div');
       div.className = 'ticket';
+      const ingredientLine = activeStageId >= 3 ? '' : `<div>${t.needs.join(' + ')}</div>`;
       div.innerHTML = `<div class="name">${t.name}</div>
-        <div>${t.needs.join(' + ')}</div>
+        ${ingredientLine}
         <div class="bar-bg"><div class="bar-fill" style="width:${pct}%; background:${pct < 30 ? 'var(--bad)' : 'var(--good)'}"></div></div>`;
       el.appendChild(div);
     });
   }
 
   function completeOrder(contents) {
-    const sorted = [...contents].sort().join(',');
+    if (window.kitchenSession?.connected) {
+      window.kitchenSession.send({ type: 'serve-order', contents, plateId: player.holding?.sharedItemId });
+      // Keep the plate visible until the server confirms a successful serve.
+      return false;
+    }
+    const sorted = contents.map(item => typeof item === 'string' ? item : item.item).sort().join(',');
     const idx = tickets.findIndex(t => [...t.needs].sort().join(',') === sorted);
     if (idx >= 0) {
-      if (window.kitchenSession?.connected) { window.kitchenSession.send({ type: 'serve-order', contents, plateId: player.holding?.sharedItemId }); return true; }
       score += tickets[idx].points;
       flashMsg(`Served ${tickets[idx].name}! +${tickets[idx].points}`, 'good');
       tickets.splice(idx, 1);
@@ -510,6 +572,9 @@
 
   window.addEventListener('kitchen-handover-warning', event => {
     flashMsg(event.detail.text, 'bad');
+  });
+  window.addEventListener('kitchen-action-rejected', event => {
+    flashMsg(event.detail.message || 'That action cannot be completed.', 'bad');
   });
 
   function handleAction(key) {
@@ -631,7 +696,17 @@
       const f = facingCell();
       if (key === 'e' && f) {
         const crateIngredient = f.cell.type.startsWith('crate_') ? f.cell.type.split('_')[1] : null;
-        if (!player.holding && ['tomato', 'lettuce'].includes(crateIngredient)) { window.kitchenSession.send({ type: 'ingredient-pick', source: 'crate', item: crateIngredient }); return; }
+        if (!player.holding && ['tomato', ...(activeStageId === 5 ? ['pickle'] : ['lettuce']), ...(activeStageId >= 2 ? ['chicken'] : [])].includes(crateIngredient)) { window.kitchenSession.send({ type: 'ingredient-pick', source: 'crate', item: crateIngredient }); return; }
+        const stationIngredient = sharedIngredients.find(item => item.holderId === null && item.c === f.c && item.r === f.r && item.station === f.cell.type);
+        if (player.holding?.sharedIngredient && ['board', 'stove'].includes(f.cell.type)) {
+          window.kitchenSession.send({ type: 'ingredient-place-station', itemId: player.holding.sharedItemId, c: f.c, r: f.r, station: f.cell.type }); return;
+        }
+        if (player.holding?.sharedPlate && stationIngredient) {
+          window.kitchenSession.send({ type: 'plate-add-station-item', plateId: player.holding.sharedItemId, c: f.c, r: f.r, station: f.cell.type }); return;
+        }
+        if (!player.holding && stationIngredient) {
+          window.kitchenSession.send({ type: 'ingredient-process', c: f.c, r: f.r, station: f.cell.type }); return;
+        }
         const floorIngredient = sharedIngredients.find(item => item.holderId === null && item.c === f.c && item.r === f.r);
         const floorBunForPlate = sharedBuns.find(item => item.holderId === null && item.c === f.c && item.r === f.r);
         if (player.holding?.sharedPlate && (floorIngredient || floorBunForPlate)) {
@@ -662,17 +737,21 @@
         }
       }
       if (key === 'q' && player.holding?.sharedBun) {
-        const dir = cardinalDir();
-        const c = player.gc + dir.x * 2, r = player.gr + dir.y * 2;
-        window.kitchenSession.send({ type: 'bun-drop', itemId: player.holding.sharedItemId, c, r }); return;
+        const target = sharedThrowTarget();
+        if (!target) { flashMsg('Nowhere clear to throw it.', 'bad'); return; }
+        window.kitchenSession.send({ type: 'bun-drop', itemId: player.holding.sharedItemId, ...target }); return;
       }
       if (key === 'q' && player.holding?.sharedPlate) {
-        const dir = cardinalDir();
-        window.kitchenSession.send({ type: 'plate-drop', itemId: player.holding.sharedItemId, c: player.gc + dir.x * 2, r: player.gr + dir.y * 2 }); return;
+        const target = sharedThrowTarget();
+        if (!target) { flashMsg('Nowhere clear to throw it.', 'bad'); return; }
+        if (activeStageId >= 2 && player.holding.contents.length) window.kitchenSession.send({ type: 'plate-remove-item', plateId: player.holding.sharedItemId, ...target });
+        else window.kitchenSession.send({ type: 'plate-drop', itemId: player.holding.sharedItemId, ...target });
+        return;
       }
       if (key === 'q' && player.holding?.sharedIngredient) {
-        const dir = cardinalDir();
-        window.kitchenSession.send({ type: 'ingredient-drop', itemId: player.holding.sharedItemId, c: player.gc + dir.x * 2, r: player.gr + dir.y * 2 }); return;
+        const target = sharedThrowTarget();
+        if (!target) { flashMsg('Nowhere clear to throw it.', 'bad'); return; }
+        window.kitchenSession.send({ type: 'ingredient-drop', itemId: player.holding.sharedItemId, ...target }); return;
       }
     }
     if (key === 'e' && running) {
@@ -705,11 +784,13 @@
   // ---------- Render ----------
   function stationColor(type) {
     if (type === 'floor') return null;
+    if (type === 'abyss') return '#171523';
+    if (type === 'bridge') return '#9a7650';
     if (type === 'counter') return '#7a5a42';
     if (type.startsWith('crate_')) return '#8a6248';
     if (type === 'board') return '#c9a876';
     if (type === 'stove') return '#5a4a44';
-    if (type === 'plates') return '#e8e0d0';
+    if (type === 'plates') return '#aaa7a1';
     if (type === 'serve') return '#e0763a';
     if (type === 'trash') return '#3a2a24';
     return '#8a6248';
@@ -723,12 +804,16 @@
       ctx.beginPath(); ctx.arc(cx, cy - yOffset, 8, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5; ctx.stroke();
       itemObj.contents.forEach((c, i) => {
-        ctx.fillStyle = ingredientColors[c] || '#fff';
+        ctx.fillStyle = ingredientColors[typeof c === 'string' ? c : c.item] || '#fff';
         ctx.beginPath(); ctx.arc(cx - 4 + i * 4, cy - yOffset, 2.5, 0, Math.PI * 2); ctx.fill();
       });
     } else {
       ctx.fillStyle = ingredientColors[itemObj.item] || '#fff';
       ctx.beginPath(); ctx.arc(cx, cy - yOffset, 8, 0, Math.PI * 2); ctx.fill();
+      if (itemObj.chopped || (itemObj.cookedSides || 0) > 0) {
+        ctx.strokeStyle = itemObj.cookedSides >= 2 ? '#3f261b' : '#f2e6d5';
+        ctx.lineWidth = 2; ctx.stroke();
+      }
     }
   }
 
@@ -777,26 +862,36 @@
 
   function drawStationIcon(cell, x, y) {
     const cx = x + CELL / 2, cy = y + CELL / 2;
+    // Stage 1 teaches the labelled baseline. Later agents must recognise
+    // stations and ingredient sources from observation or inherited notes.
+    const labelsHidden = activeStageId >= 2;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.font = '11px monospace';
     ctx.fillStyle = '#f2e6d5';
     if (cell.type.startsWith('crate_')) {
       const ing = cell.type.split('_')[1];
-      ctx.fillStyle = ingredientColors[ing] || '#fff';
-      ctx.beginPath(); ctx.arc(cx, cy, 12, 0, Math.PI * 2); ctx.fill();
+      const crateEmoji = { tomato: '🍅', lettuce: '🥬', pickle: '🥒', chicken: '🍗', bun: '🍔' }[ing] || '•';
+      ctx.font = '24px sans-serif';
+      ctx.fillStyle = '#fff';
+      ctx.fillText(crateEmoji, cx, cy);
       ctx.fillStyle = '#f2e6d5';
-      ctx.fillText(ing[0].toUpperCase(), cx, cy + CELL/2 - 8);
+      if (!labelsHidden) ctx.fillText(ing[0].toUpperCase(), cx, cy + CELL/2 - 8);
     } else if (cell.type === 'board') {
-      ctx.fillText('BOARD', cx, cy);
+      if (labelsHidden) { ctx.font = '22px sans-serif'; ctx.fillText('🔪', cx, cy); }
+      else ctx.fillText('BOARD', cx, cy);
     } else if (cell.type === 'stove') {
-      ctx.fillText('STOVE', cx, cy);
+      if (labelsHidden) { ctx.font = '22px sans-serif'; ctx.fillText('🔥', cx, cy); }
+      else ctx.fillText('STOVE', cx, cy);
     } else if (cell.type === 'plates') {
       ctx.fillStyle = '#000';
-      ctx.fillText('PLATES', cx, cy);
+      if (labelsHidden) { ctx.font = '22px sans-serif'; ctx.fillText('🍽️', cx, cy); }
+      else ctx.fillText('PLATES', cx, cy);
     } else if (cell.type === 'serve') {
-      ctx.fillText('SERVE', cx, cy);
+      if (!labelsHidden) ctx.fillText('SERVE', cx, cy);
     } else if (cell.type === 'trash') {
-      ctx.fillText('TRASH', cx, cy);
+      if (!labelsHidden) ctx.fillText('TRASH', cx, cy);
+    } else if (cell.type === 'bridge') {
+      ctx.fillStyle = '#2a1f18'; ctx.fillText('BRIDGE', cx, cy);
     }
     if (cell.item) {
       drawItemIcon(cell.item, cx, cy, 14);
@@ -822,7 +917,7 @@
         ctx.beginPath(); ctx.arc(hx, hy, 10, 0, Math.PI * 2); ctx.fill();
         ctx.strokeStyle = '#b8a687'; ctx.stroke();
         player.holding.contents.forEach((c, i) => {
-          ctx.fillStyle = ingredientColors[c] || '#fff';
+          ctx.fillStyle = ingredientColors[typeof c === 'string' ? c : c.item] || '#fff';
           ctx.beginPath(); ctx.arc(hx - 5 + i * 5, hy, 3, 0, Math.PI * 2); ctx.fill();
         });
       } else { ctx.fillStyle = ingredientColors[player.holding.item] || '#fff'; ctx.beginPath(); ctx.arc(hx, hy, 8, 0, Math.PI * 2); ctx.fill(); }
