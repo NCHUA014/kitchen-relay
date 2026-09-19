@@ -15,9 +15,9 @@
     <div>Serve matching tickets before they expire.</div>
     <div class="rules-title">Notes</div>
     <div>Open Notes to read discoveries from earlier agents or leave a handover note.</div>
-    <div class="handover-reminder">Note: You will be responsible for the cultural transmission for the next LLM to play. Make your notes as comprehensive as possible.</div>
     <div class="rules-title">Macros</div>
-    <div>Create, edit, or delete saved keyboard sequences for later agents.</div>`;
+    <div>Create, edit, or delete saved keyboard sequences for later agents.</div>
+    <div class="handover-reminder">*Note: You are responsible to provide sufficient information for the next LLM to play.</div>`;
 
   // ---------- Grid / stations ----------
   // Types: 'floor','counter','crate','board','stove','plates','serve','trash'
@@ -426,15 +426,22 @@
     const sequence = expandMacro(macro);
     if (!sequence) { flashMsg(`${macro.name} has a missing or circular macro call.`, 'bad'); return; }
     macroRunning = true;
+    if (window.kitchenSession?.connected) window.kitchenSession.send({ type: 'macro-run-start', macroId: macro.id });
     flashMsg(`Running ${macro.name}.`);
     let index = 0;
+    const finish = () => {
+      macroRunning = false;
+      if (window.kitchenSession?.connected) window.kitchenSession.send({ type: 'macro-run-finish' });
+    };
     const nextAction = () => {
-      if (!running || index >= sequence.length) { macroRunning = false; return; }
+      if (!running || index >= sequence.length) { finish(); return; }
       const action = sequence[index++];
       if (action === 'w' || action === 'a' || action === 's' || action === 'd') {
         const directions = { w: [0, -1], a: [-1, 0], s: [0, 1], d: [1, 0] };
         const [dc, dr] = directions[action];
-        player.dir = { x: dc, y: dr }; tryStep(dc, dr);
+        player.dir = { x: dc, y: dr };
+        if (window.kitchenSession?.connected) window.kitchenSession.send({ type: 'macro-run-step', action: 'move', gc: player.gc + dc, gr: player.gr + dr });
+        if (!tryStep(dc, dr)) { finish(); return; }
       } else {
         handleActionWrapped(action);
       }
@@ -553,12 +560,13 @@
 
   function tryStep(dc, dr) {
     const targetC = player.gc + dc, targetR = player.gr + dr;
-    if (targetR < 0 || targetR >= ROWS || targetC < 0 || targetC >= COLS) return;
-    if (isSolid(grid[targetR][targetC].type)) return;
+    if (targetR < 0 || targetR >= ROWS || targetC < 0 || targetC >= COLS) return false;
+    if (isSolid(grid[targetR][targetC].type)) return false;
     player.gc = targetC; player.gr = targetR;
     player.x = player.gc * CELL + CELL / 2;
     player.y = player.gr * CELL + CELL / 2;
     publishPlayerState();
+    return true;
   }
 
   // ---------- Recipes / Tickets ----------
@@ -969,7 +977,8 @@
       if (labelsHidden) { ctx.font = '22px sans-serif'; ctx.fillText('🍽️', cx, cy); }
       else ctx.fillText('PLATES', cx, cy);
     } else if (cell.type === 'serve') {
-      if (!labelsHidden) ctx.fillText('SERVE', cx, cy);
+      if (labelsHidden) { ctx.font = '20px sans-serif'; ctx.fillText('🛎️', cx - 10, cy); ctx.fillText('🍽️', cx + 11, cy); }
+      else ctx.fillText('SERVE', cx, cy);
     } else if (cell.type === 'trash') {
       if (labelsHidden) { ctx.font = '22px sans-serif'; ctx.fillText('🗑️', cx, cy); }
       else ctx.fillText('TRASH', cx, cy);

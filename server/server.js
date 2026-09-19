@@ -84,7 +84,17 @@ function objectAt(room, c, r) {
     || room.plates.some(item => item.holderId === null && item.c === c && item.r === r);
 }
 
-function reject(player, message) { send(player.ws, { type: 'action-rejected', message }); }
+function finishMacroRun(player, blocked = false) {
+  const session = agentSessionForPlayer(player);
+  if (!session?.macroRunId) return;
+  database.finishMacroRun(session.macroRunId, blocked);
+  session.macroRunId = null;
+}
+
+function reject(player, message) {
+  finishMacroRun(player, true);
+  send(player.ws, { type: 'action-rejected', message });
+}
 
 function stageProduce(room) {
   return ['tomato', ...(room.stage === 5 ? ['pickle'] : ['lettuce']), ...(room.stage >= 2 ? ['chicken'] : [])];
@@ -172,9 +182,24 @@ function handlePlayerMessage(player, message) {
       console.log(`[${room.id}] ${player.name} saved handover notepad revision ${room.notepad.revision}.`);
       return broadcastRoom(room);
     }
+    if (message.type === 'macro-run-start') {
+      const session = agentSessionForPlayer(player);
+      const macro = room.macros.find(item => item.id === String(message.macroId || ''));
+      if (!session) return;
+      if (!macro) return reject(player, 'That macro is not available.');
+      finishMacroRun(player, true);
+      session.macroRunId = database.startMacroRun(session.experimentId, player, room.stage, macro);
+      return;
+    }
+    if (message.type === 'macro-run-step') {
+      if (message.action !== 'move' || !Number.isInteger(message.gc) || !Number.isInteger(message.gr)) return;
+      if (!engine.isWalkable(room, message.gc, message.gr)) return reject(player, 'Macro movement is blocked.');
+      return;
+    }
+    if (message.type === 'macro-run-finish') { finishMacroRun(player, false); return; }
     if (message.type === 'player-state') {
       if (!room.activePlayerIds.includes(player.id)) return;
-      if (!engine.move(room, player, message)) return;
+      if (!engine.move(room, player, message)) return reject(player, 'That movement is blocked.');
       const { gc, gr, dir } = player;
       room.players.forEach(member => {
         if (member !== player) send(member.ws, { type: 'player-state', playerId: player.id, gc, gr, dir, holding: message.holding || null });
@@ -423,7 +448,7 @@ function agentObservation(session) {
     world: { buns: room.buns, ingredients: room.ingredients, plates: room.plates },
     score: room.score, missed: room.missed, customerMessage: room.customerMessage || '',
     notepad: session.notepadOpen ? room.notepad : { author: room.notepad.author, updatedAt: room.notepad.updatedAt, revision: room.notepad.revision }, macros: room.macros,
-    availableActions: ['move', 'pickupBun', 'dropBun', 'pickupIngredient', 'dropIngredient', 'placeIngredient', 'processIngredient', 'takePlate', 'pickupPlate', 'dropPlate', 'discardPlate', 'addToPlate', 'addFloorItemToPlate', 'addStationItemToPlate', 'removePlateItem', 'serve', 'openNotepad', 'saveNotepad', 'saveMacros'],
+    availableActions: ['move', 'pickupBun', 'dropBun', 'pickupIngredient', 'dropIngredient', 'placeIngredient', 'processIngredient', 'takePlate', 'pickupPlate', 'dropPlate', 'discardPlate', 'addToPlate', 'addFloorItemToPlate', 'addStationItemToPlate', 'removePlateItem', 'serve', 'openNotepad', 'saveNotepad', 'saveMacros', 'startMacroRun', 'macroMoveStep', 'finishMacroRun'],
   };
 }
 
@@ -455,6 +480,9 @@ function toGameMessage(player, action, input = {}) {
     case 'openNotepad': return { ...common, type: 'notepad-open' };
     case 'saveNotepad': return { ...common, type: 'notepad-save' };
     case 'saveMacros': return { ...common, type: 'macros-sync' };
+    case 'startMacroRun': return { ...common, type: 'macro-run-start' };
+    case 'macroMoveStep': return { ...common, type: 'macro-run-step' };
+    case 'finishMacroRun': return { ...common, type: 'macro-run-finish' };
     default: return null;
   }
 }
