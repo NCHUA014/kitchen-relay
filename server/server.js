@@ -1,46 +1,29 @@
 const express = require('express');
+const crypto = require('crypto');
+const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const { WebSocketServer, WebSocket } = require('ws');
+const { GameEngine, TURN_PLAN, STAGES } = require('./game-engine');
+const database = require('./database');
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 const PORT = process.env.PORT || 3000;
-// Agent 1 is deliberately responsible for the first two stages. Later
-// stages are passed to fresh agents, with only notes/macros as handover.
-const TURN_PLAN = [
-  { playerIndex: 0, stageId: 1 }, { playerIndex: 0, stageId: 2 },
-  { playerIndex: 1, stageId: 3 }, { playerIndex: 2, stageId: 4 },
-  { playerIndex: 3, stageId: 5 },
-];
 const MAX_PLAYERS = 4;
 const SHIFT_SECONDS = Number(process.env.SHIFT_SECONDS || 180);
 const WARNING_SECONDS = 60;
 const PREPARATION_MS = 1500;
-const STAGE_ONE_RECIPES = [
-  { name: 'Garden Salad', needs: ['tomato', 'lettuce'], displayNeeds: ['chopped lettuce', 'chopped tomato'], points: 70, time: 42 },
-  { name: 'Vegan Burger', needs: ['bun', 'tomato', 'lettuce'], displayNeeds: ['chopped lettuce', 'chopped tomato', 'bun'], points: 90, time: 48 },
-];
-const STAGE_TWO_RECIPES = [
-  { name: 'Garden Salad', needs: ['tomato', 'lettuce'], displayNeeds: [], points: 70, time: 42 },
-  { name: 'Vegan Burger', needs: ['bun', 'tomato', 'lettuce'], displayNeeds: [], points: 90, time: 48 },
-  { name: 'Chicken Burger', needs: ['bun', 'chicken', 'tomato', 'lettuce'], displayNeeds: ['vegan burger', 'grilled chicken'], points: 120, time: 55 },
-];
-const STAGE_FIVE_RECIPES = STAGE_TWO_RECIPES.map(recipe => ({
-  ...recipe,
-  needs: recipe.needs.map(item => item === 'lettuce' ? 'pickle' : item),
-}));
-const STAGES = {
-  1: { id: 1, name: 'Stage 1', recipes: STAGE_ONE_RECIPES },
-  2: { id: 2, name: 'Stage 2', recipes: STAGE_TWO_RECIPES },
-  3: { id: 3, name: 'Stage 3', recipes: STAGE_TWO_RECIPES },
-  4: { id: 4, name: 'Stage 4', recipes: STAGE_TWO_RECIPES },
-  5: { id: 5, name: 'Stage 5', recipes: STAGE_FIVE_RECIPES },
-};
 const rooms = new Map();
+const engine = new GameEngine();
+const experiments = new Map();
+const agentTokens = new Map();
+const RESEARCHER_TOKEN = process.env.RESEARCHER_TOKEN || 'local-researcher-token';
+const RUNS_DIR = path.join(__dirname, 'runs');
 let nextPlayerId = 1;
 
+app.use(express.json({ limit: '32kb' }));
 app.use(express.static(path.join(__dirname, '..', 'client')));
 
 function makeRoomId() {
@@ -53,21 +36,28 @@ function makeRoomId() {
 }
 
 function send(ws, message) {
-  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
+  if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
 }
 
 function bridgeRow(room, now = Date.now()) {
-  if (room.stage !== 4 && room.stage !== 5) return null;
-  const phase = Math.floor(Math.max(0, now - room.stageStartedAt) / 2000) % 8;
-  return [3, 4, 5, 6, 7, 6, 5, 4][phase];
+  return engine.bridgeRow(room, now);
+}
+
+function experimentForRoom(room) {
+  return [...experiments.values()].find(experiment => experiment.room === room) || null;
+}
+
+function agentSessionForPlayer(player) {
+  return [...agentTokens.values()].find(session => session.player === player) || null;
 }
 
 function roomState(room, player) {
   return {
     type: 'room-state', roomId: room.id, status: room.status, hostId: room.hostId, activePlayerIds: room.activePlayerIds,
     you: player.id, maxPlayers: MAX_PLAYERS,
-    players: room.players.map(({ id, name }) => ({ id, name })), notes: room.notes, macros: room.macros,
+    players: room.players.map(({ id, name, gc, gr, dir }) => ({ id, name, gc, gr, dir })), notes: room.notepad.text ? [room.notepad] : [], notepad: room.notepad, macros: room.macros,
     stage: room.stage, stageName: STAGES[room.stage]?.name || 'Stage', bridgeRow: bridgeRow(room), customerMessage: room.customerMessage || '',
+    map: engine.map(room),
     score: room.score, missed: room.missed, buns: room.buns, ingredients: room.ingredients, plates: room.plates,
     tickets: room.stage >= 3 ? room.tickets.map(({ needs, displayNeeds, ...ticket }) => ticket) : room.tickets,
     schedule: room.schedule || [], serverNow: Date.now(),
@@ -100,6 +90,11 @@ function stageProduce(room) {
   return ['tomato', ...(room.stage === 5 ? ['pickle'] : ['lettuce']), ...(room.stage >= 2 ? ['chicken'] : [])];
 }
 
+function isThrowTarget(room, player, c, r) {
+  const distance = Math.abs(c - player.gc) + Math.abs(r - player.gr);
+  return distance >= 1 && distance <= 3 && (c === player.gc || r === player.gr) && engine.isDropTile(room, c, r);
+}
+
 function leaveRoom(player) {
   const room = player?.room;
   if (!room) return;
@@ -122,7 +117,7 @@ function joinRoom(ws, message) {
   if (!name) return send(ws, { type: 'error', message: 'Enter a display name.' });
   let room;
   if (message.action === 'create') {
-    room = { id: makeRoomId(), players: [], notes: [], macros: [], score: 0, missed: 0, buns: [], nextBunId: 1, ingredients: [], nextIngredientId: 1, plates: [], nextPlateId: 1, tickets: [], nextTicketAt: null, stage: 1, customerMessage: '', status: 'waiting', hostId: null, activePlayerIds: [], schedule: [], timer: null };
+    room = engine.createRoom(makeRoomId());
     rooms.set(room.id, room);
     console.log(`[${room.id}] room created.`);
   } else {
@@ -140,7 +135,7 @@ function joinRoom(ws, message) {
   ws.player = player;
   room.players.push(player);
   if (!room.hostId) room.hostId = player.id;
-  console.log(`[${room.id}] ${name} joined (${room.players.length}/${MAX_PLAYERS})`);
+  console.log(`[${room.id}] ${name} joined the kitchen! (${room.players.length}/${MAX_PLAYERS})`);
   broadcastRoom(room);
   if (returning && room.status === 'active') {
     advanceRoom(room);
@@ -154,41 +149,35 @@ function joinRoom(ws, message) {
   }
 }
 
-wss.on('connection', ws => {
-  send(ws, { type: 'connected' });
-  ws.on('message', raw => {
-    let message;
-    try { message = JSON.parse(raw); } catch { return send(ws, { type: 'error', message: 'Invalid message.' }); }
-    if (message.type === 'join-room') return joinRoom(ws, message);
-    const player = ws.player;
+function handlePlayerMessage(player, message) {
+    const ws = player?.ws;
     if (!player?.room) return send(ws, { type: 'error', message: 'Join a room first.' });
     const room = player.room;
     if (room.status === 'finished') return;
-    if (message.type === 'note-create') {
-      const text = String(message.text || '').trim().slice(0, 500);
-      if (!text) return;
-      room.notes.push({ id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, author: player.name, text, updatedAt: Date.now() });
-      console.log(`[${room.id}] ${player.name} created a note.`); return broadcastRoom(room);
+    if (message.type !== 'player-state') engine.record(room, 'command', { playerId: player.id, command: message.type });
+    if (message.type === 'notepad-open') {
+      const session = agentSessionForPlayer(player);
+      if (session) session.notepadOpen = true;
+      console.log(`[${room.id}] ${player.name} opened the handover notepad.`);
+      return;
     }
-    if (message.type === 'note-update') {
-      const note = room.notes.find(item => item.id === message.id);
-      const text = String(message.text || '').trim().slice(0, 500);
-      if (!note || !text) return;
-      note.text = text; note.updatedAt = Date.now();
-      console.log(`[${room.id}] ${player.name} updated a note.`); return broadcastRoom(room);
-    }
-    if (message.type === 'note-delete') {
-      const before = room.notes.length;
-      room.notes = room.notes.filter(item => item.id !== message.id);
-      if (room.notes.length !== before) console.log(`[${room.id}] ${player.name} deleted a note.`);
+    if (message.type === 'notepad-save') {
+      const text = String(message.text || '').trim().slice(0, 10000);
+      const session = agentSessionForPlayer(player);
+      if (session && !session.notepadOpen) return reject(player, 'Open the handover notepad before saving it.');
+      if (text === room.notepad.text) return reject(player, 'Nothing changed in the notepad.');
+      room.notepad = { text, author: player.name, updatedAt: Date.now(), revision: room.notepad.revision + 1 };
+      if (session) database.saveKnowledge(session.experimentId, player.id, 'notepad-save', room.notepad);
+      if (session) database.saveNotepadRevision(session.experimentId, player, room.stage, room.notepad);
+      console.log(`[${room.id}] ${player.name} saved handover notepad revision ${room.notepad.revision}.`);
       return broadcastRoom(room);
     }
     if (message.type === 'player-state') {
       if (!room.activePlayerIds.includes(player.id)) return;
-      const gc = Number(message.gc), gr = Number(message.gr);
-      if (!Number.isInteger(gc) || !Number.isInteger(gr) || gc < 0 || gr < 0 || gc > 16 || gr > 9) return;
+      if (!engine.move(room, player, message)) return;
+      const { gc, gr, dir } = player;
       room.players.forEach(member => {
-        if (member !== player) send(member.ws, { type: 'player-state', playerId: player.id, gc, gr, dir: message.dir, holding: message.holding || null });
+        if (member !== player) send(member.ws, { type: 'player-state', playerId: player.id, gc, gr, dir, holding: message.holding || null });
       });
       return;
     }
@@ -208,7 +197,7 @@ wss.on('connection', ws => {
     if (message.type === 'bun-drop') {
       const c = Number(message.c), r = Number(message.r);
       const bun = room.buns.find(item => item.id === Number(message.itemId));
-      if (bun?.holderId !== player.id || !Number.isInteger(c) || !Number.isInteger(r) || c < 0 || r < 0 || c > 16 || r > 9) return;
+      if (bun?.holderId !== player.id || !Number.isInteger(c) || !Number.isInteger(r) || !isThrowTarget(room, player, c, r)) return;
       if (room.stage >= 2 && objectAt(room, c, r)) return reject(player, 'That spot is occupied.');
       bun.holderId = null; bun.c = c; bun.r = r;
       console.log(`[${room.id}] ${player.name} released the shared bun at ${c},${r}.`); return broadcastRoom(room);
@@ -224,7 +213,7 @@ wss.on('connection', ws => {
     if (message.type === 'ingredient-drop') {
       const ingredient = room.ingredients.find(entry => entry.id === Number(message.itemId));
       const c = Number(message.c), r = Number(message.r);
-      if (ingredient?.holderId !== player.id || !Number.isInteger(c) || !Number.isInteger(r) || c < 0 || r < 0 || c > 16 || r > 9) return;
+      if (ingredient?.holderId !== player.id || !Number.isInteger(c) || !Number.isInteger(r) || !isThrowTarget(room, player, c, r)) return;
       if (room.stage >= 2 && objectAt(room, c, r)) return reject(player, 'That spot is occupied.');
       ingredient.holderId = null; ingredient.c = c; ingredient.r = r; return broadcastRoom(room);
     }
@@ -247,7 +236,7 @@ wss.on('connection', ws => {
         else { ingredient.holderId = player.id; ingredient.c = null; ingredient.r = null; ingredient.station = null; }
       } else if (ingredient.station === 'stove' && ingredient.item === 'chicken') {
         if (ingredient.processing) return broadcastRoom(room);
-        if (ingredient.cookedSides < 2) {
+        if (ingredient.cookedSides < 1) {
           ingredient.processing = 'grill'; ingredient.processStartedAt = Date.now(); ingredient.processEndsAt = ingredient.processStartedAt + PREPARATION_MS;
         }
         else { ingredient.holderId = player.id; ingredient.c = null; ingredient.r = null; ingredient.station = null; }
@@ -267,7 +256,7 @@ wss.on('connection', ws => {
     if (message.type === 'plate-drop') {
       const plate = room.plates.find(item => item.id === Number(message.itemId));
       const c = Number(message.c), r = Number(message.r);
-      if (plate?.holderId !== player.id || !Number.isInteger(c) || !Number.isInteger(r) || c < 0 || r < 0 || c > 16 || r > 9) return;
+      if (plate?.holderId !== player.id || !Number.isInteger(c) || !Number.isInteger(r) || !isThrowTarget(room, player, c, r)) return;
       if (room.stage >= 2 && objectAt(room, c, r)) return reject(player, 'That spot is occupied.');
       plate.holderId = null; plate.c = c; plate.r = r; return broadcastRoom(room);
     }
@@ -321,17 +310,23 @@ wss.on('connection', ws => {
       if (!plate) return;
       const contents = plate.contents.map(plateIngredient).map(item => item.item).sort().join(',');
       const index = room.tickets.findIndex(ticket => ticket.needs.slice().sort().join(',') === contents);
-      if (index < 0) { room.customerMessage = 'That is not what I ordered.'; return broadcastRoom(room); }
+      const experiment = experimentForRoom(room);
+      if (index < 0) {
+        if (experiment) database.saveTicketEvent(experiment.experimentId, player, room.stage, { id: `unmatched-${Date.now()}`, name: 'Unmatched plate' }, 'failed_serve', 'recipe_mismatch');
+        room.customerMessage = 'That is not what I ordered.'; return broadcastRoom(room);
+      }
       const prepared = plate.contents.map(plateIngredient);
       const chicken = prepared.find(item => item.item === 'chicken');
       const tomato = prepared.find(item => item.item === 'tomato');
       const greens = prepared.find(item => item.item === (room.stage === 5 ? 'pickle' : 'lettuce'));
-      if (chicken && chicken.cookedSides < 2) { room.customerMessage = chicken.cookedSides === 1 ? 'Why is it cold on one side?' : 'Chicken still smells, yuck!'; return broadcastRoom(room); }
-      if (tomato && !tomato.chopped) { room.customerMessage = "Tomato still looks round. Can't fit that in a burger, can ya?"; return broadcastRoom(room); }
-      if (greens && !greens.chopped) { room.customerMessage = room.stage === 5 ? 'Pickle slices are still too large to fit into a burger.' : 'Lettuce is still too large to fit into a burger.'; return broadcastRoom(room); }
-      const ticket = room.tickets.splice(index, 1)[0]; room.score += ticket.points;
+      const ticket = room.tickets[index];
+      if (chicken && chicken.cookedSides < 1) { if (experiment) database.saveTicketEvent(experiment.experimentId, player, room.stage, ticket, 'failed_serve', 'chicken_not_grilled'); room.customerMessage = 'Chicken still smells, yuck!'; return broadcastRoom(room); }
+      if (room.stage >= 2 && tomato && !tomato.chopped) { if (experiment) database.saveTicketEvent(experiment.experimentId, player, room.stage, ticket, 'failed_serve', 'tomato_not_chopped'); room.customerMessage = "Tomato still looks round. Can't fit that in a burger, can ya?"; return broadcastRoom(room); }
+      if (room.stage >= 2 && greens && !greens.chopped) { if (experiment) database.saveTicketEvent(experiment.experimentId, player, room.stage, ticket, 'failed_serve', room.stage === 5 ? 'pickle_not_chopped' : 'lettuce_not_chopped'); room.customerMessage = room.stage === 5 ? 'Pickle slices are still too large to fit into a burger.' : 'Lettuce is still too large to fit into a burger.'; return broadcastRoom(room); }
+      room.tickets.splice(index, 1); room.score += ticket.points;
       room.plates.splice(room.plates.indexOf(plate), 1);
       room.customerMessage = ':) Perfect — thank you!';
+      if (experiment) { database.saveTicketEvent(experiment.experimentId, player, room.stage, ticket, 'served'); database.saveFirstSuccessfulServe(experiment.experimentId, player, room.stage); }
       console.log(`[${room.id}] ${player.name} served ${ticket.name} (+${ticket.points}).`); return broadcastRoom(room);
     }
     if (message.type === 'missed-add') {
@@ -339,7 +334,21 @@ wss.on('connection', ws => {
     }
     if (message.type === 'macros-sync') {
       if (!Array.isArray(message.macros) || message.macros.length > 20) return;
+      const previousMacros = new Map(room.macros.map(macro => [macro.id, macro]));
       room.macros = message.macros.map(macro => ({ id: String(macro.id || ''), name: String(macro.name || '').slice(0, 40), shortcut: String(macro.shortcut || '').slice(0, 1), sequence: Array.isArray(macro.sequence) ? macro.sequence.slice(0, 40) : [] }));
+      const session = agentSessionForPlayer(player);
+      if (session) {
+        database.saveKnowledge(session.experimentId, player.id, 'macros-sync', room.macros);
+        const currentIds = new Set(room.macros.map(macro => macro.id));
+        room.macros.forEach(macro => {
+          const previous = previousMacros.get(macro.id);
+          const changed = previous && JSON.stringify(previous) !== JSON.stringify(macro);
+          if (!previous || changed) database.saveMacroRevision(session.experimentId, player, room.stage, macro, previous ? 'macro-edit' : 'macro-create');
+        });
+        previousMacros.forEach(macro => {
+          if (!currentIds.has(macro.id)) database.saveMacroRevision(session.experimentId, player, room.stage, macro, 'macro-delete');
+        });
+      }
       console.log(`[${room.id}] ${player.name} updated shared macros.`); return broadcastRoom(room);
     }
     if (message.type === 'start-session') {
@@ -347,7 +356,188 @@ wss.on('connection', ws => {
       startSession(room, player);
       return broadcastRoom(room);
     }
+}
+
+function handleSocketMessage(ws, raw) {
+  let message;
+  try { message = JSON.parse(raw); } catch { return send(ws, { type: 'error', message: 'Invalid message.' }); }
+  if (message.type === 'join-room') return joinRoom(ws, message);
+  return handlePlayerMessage(ws.player, message);
+}
+
+function researchToken(req) {
+  return String(req.get('x-researcher-token') || req.get('authorization') || '').replace(/^Bearer\s+/i, '');
+}
+
+function requireResearcher(req, res, next) {
+  if (researchToken(req) !== RESEARCHER_TOKEN) return res.status(401).json({ error: 'Researcher token required.' });
+  next();
+}
+
+function agentToken(req) {
+  return String(req.get('authorization') || '').replace(/^Bearer\s+/i, '');
+}
+
+function agentForRequest(req, res) {
+  const session = agentTokens.get(agentToken(req));
+  if (!session) { res.status(401).json({ error: 'Valid agent token required.' }); return null; }
+  return session;
+}
+
+function safeBrand(value) {
+  const brand = String(value || '').trim().slice(0, 24);
+  return /^[A-Za-z0-9][A-Za-z0-9 ._-]*$/.test(brand) ? brand : null;
+}
+
+function transcriptPaths(experimentId, brand) {
+  const directory = path.join(RUNS_DIR, experimentId);
+  const slug = brand.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'agent';
+  return { directory, events: path.join(directory, 'events.jsonl'), agentJsonl: path.join(directory, `${slug}.jsonl`), agentText: path.join(directory, `${slug}.txt`) };
+}
+
+function recordAgentEvent(session, kind, data) {
+  const event = { at: new Date().toISOString(), experimentId: session.experimentId, agentId: session.player.id, brand: session.brand, kind, data };
+  const paths = transcriptPaths(session.experimentId, session.brand);
+  fs.appendFileSync(paths.events, `${JSON.stringify(event)}\n`);
+  fs.appendFileSync(paths.agentJsonl, `${JSON.stringify(event)}\n`);
+  database.saveAgentEvent(event);
+  const summary = kind === 'act'
+    ? `${event.at} ACT ${data.action}${data.accepted ? '' : ` rejected: ${data.reason}`}`
+    : `${event.at} OBSERVE stage ${data.observation.stage.id} (${data.observation.status})`;
+  fs.appendFileSync(paths.agentText, `${summary}\n`);
+}
+
+function agentObservation(session) {
+  const { room, player } = session;
+  const slot = room.schedule.find(item => item.playerId === player.id);
+  const now = Date.now();
+  return {
+    experimentId: session.experimentId,
+    brand: session.brand,
+    status: room.status,
+    turn: { active: room.activePlayerIds.includes(player.id), startsAt: slot?.startAt || null, endsAt: slot?.endAt || null, remainingMs: slot ? Math.max(0, slot.endAt - now) : 0 },
+    stage: { id: room.stage, name: STAGES[room.stage]?.name || 'Stage', bridgeRow: bridgeRow(room, now) },
+    self: { id: player.id, position: { c: player.gc, r: player.gr }, direction: player.dir || null },
+    players: room.players.map(({ id, name, gc, gr }) => ({ id, name, position: { c: gc, r: gr } })),
+    map: engine.map(room, now), tickets: room.stage >= 3 ? room.tickets.map(({ needs, displayNeeds, ...ticket }) => ticket) : room.tickets,
+    world: { buns: room.buns, ingredients: room.ingredients, plates: room.plates },
+    score: room.score, missed: room.missed, customerMessage: room.customerMessage || '',
+    notepad: session.notepadOpen ? room.notepad : { author: room.notepad.author, updatedAt: room.notepad.updatedAt, revision: room.notepad.revision }, macros: room.macros,
+    availableActions: ['move', 'pickupBun', 'dropBun', 'pickupIngredient', 'dropIngredient', 'placeIngredient', 'processIngredient', 'takePlate', 'pickupPlate', 'dropPlate', 'discardPlate', 'addToPlate', 'addFloorItemToPlate', 'addStationItemToPlate', 'removePlateItem', 'serve', 'openNotepad', 'saveNotepad', 'saveMacros'],
+  };
+}
+
+function toGameMessage(player, action, input = {}) {
+  const common = { ...input };
+  delete common.action;
+  switch (action) {
+    case 'move': {
+      const directions = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+      const vector = directions[input.direction];
+      if (!vector) return null;
+      return { type: 'player-state', gc: player.gc + vector[0], gr: player.gr + vector[1], dir: { x: vector[0], y: vector[1] } };
+    }
+    case 'pickupBun': return { ...common, type: 'bun-pick' };
+    case 'dropBun': return { ...common, type: 'bun-drop' };
+    case 'pickupIngredient': return { ...common, type: 'ingredient-pick' };
+    case 'dropIngredient': return { ...common, type: 'ingredient-drop' };
+    case 'placeIngredient': return { ...common, type: 'ingredient-place-station' };
+    case 'processIngredient': return { ...common, type: 'ingredient-process' };
+    case 'takePlate': return { ...common, type: 'plate-create' };
+    case 'pickupPlate': return { ...common, type: 'plate-pick' };
+    case 'dropPlate': return { ...common, type: 'plate-drop' };
+    case 'discardPlate': return { ...common, type: 'plate-delete' };
+    case 'addToPlate': return { ...common, type: 'plate-add' };
+    case 'addFloorItemToPlate': return { ...common, type: 'plate-add-floor-item' };
+    case 'addStationItemToPlate': return { ...common, type: 'plate-add-station-item' };
+    case 'removePlateItem': return { ...common, type: 'plate-remove-item' };
+    case 'serve': return { ...common, type: 'serve-order' };
+    case 'openNotepad': return { ...common, type: 'notepad-open' };
+    case 'saveNotepad': return { ...common, type: 'notepad-save' };
+    case 'saveMacros': return { ...common, type: 'macros-sync' };
+    default: return null;
+  }
+}
+
+function createExperiment(brands) {
+  const room = engine.createRoom(makeRoomId());
+  const experimentId = `EXP-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+  const directory = path.join(RUNS_DIR, experimentId);
+  fs.mkdirSync(directory, { recursive: true });
+  const sessions = brands.map(brand => {
+    const player = { id: nextPlayerId++, name: brand, room, agent: true, ws: null };
+    room.players.push(player);
+    const token = crypto.randomBytes(32).toString('hex');
+    const session = { experimentId, brand, token, room, player };
+    agentTokens.set(token, session);
+    const paths = transcriptPaths(experimentId, brand);
+    fs.writeFileSync(paths.agentText, `Kitchen Relay transcript — ${brand}\nExperiment: ${experimentId}\n\n`);
+    return session;
   });
+  room.hostId = room.players[0].id;
+  rooms.set(room.id, room);
+  experiments.set(experimentId, { experimentId, room, sessions, createdAt: Date.now() });
+  database.createExperiment(experimentId, room, sessions);
+  console.log(`[${room.id}] experiment ${experimentId} created.`);
+  brands.forEach(brand => console.log(`[${room.id}] ${brand} joined the kitchen!`));
+  startSession(room, room.players[0]);
+  database.saveTurns(experimentId, room.schedule);
+  database.saveRoom(experimentId, room);
+  return { experimentId, room, sessions };
+}
+
+app.post('/api/researcher/experiments', requireResearcher, (req, res) => {
+  const requested = Array.isArray(req.body?.agents) ? req.body.agents : ['Codex', 'Claude', 'Gemini', 'DeepSeek'];
+  const brands = requested.map(safeBrand);
+  if (!brands.length || brands.length > MAX_PLAYERS || brands.some(brand => !brand) || new Set(brands.map(brand => brand.toLowerCase())).size !== brands.length) {
+    return res.status(400).json({ error: 'Provide 1–4 unique agent brands using letters, numbers, spaces, dots, hyphens, or underscores.' });
+  }
+  const experiment = createExperiment(brands);
+  return res.status(201).json({ experimentId: experiment.experimentId, roomId: experiment.room.id, agents: experiment.sessions.map(session => ({ brand: session.brand, token: session.token })) });
+});
+
+app.get('/api/agent/observe', (req, res) => {
+  const session = agentForRequest(req, res);
+  if (!session) return;
+  const observation = agentObservation(session);
+  recordAgentEvent(session, 'observe', { observation });
+  return res.json({ observation });
+});
+
+app.post('/api/agent/act', (req, res) => {
+  const session = agentForRequest(req, res);
+  if (!session) return;
+  const action = String(req.body?.action || '');
+  const message = toGameMessage(session.player, action, req.body || {});
+  if (!message) {
+    recordAgentEvent(session, 'act', { action, input: req.body || {}, accepted: false, reason: 'Unknown action.' });
+    return res.status(400).json({ error: 'Unknown action.' });
+  }
+  if (!session.room.activePlayerIds.includes(session.player.id) && !['openNotepad'].includes(action)) {
+    recordAgentEvent(session, 'act', { action, input: req.body || {}, accepted: false, reason: 'This agent is not in an active turn.' });
+    return res.status(409).json({ error: 'This agent is not in an active turn.' });
+  }
+  handlePlayerMessage(session.player, message);
+  const observation = agentObservation(session);
+  database.saveRoom(session.experimentId, session.room);
+  recordAgentEvent(session, 'act', { action, input: req.body || {}, accepted: true, observation });
+  return res.json({ accepted: true, observation });
+});
+
+app.get('/api/researcher/experiments', requireResearcher, (req, res) => {
+  return res.json({ experiments: [...experiments.values()].map(({ experimentId, room, createdAt }) => ({ experimentId, roomId: room.id, status: room.status, stage: room.stage, score: room.score, missed: room.missed, createdAt })) });
+});
+
+app.get('/api/researcher/experiments/:experimentId', requireResearcher, (req, res) => {
+  const experiment = experiments.get(req.params.experimentId);
+  if (!experiment) return res.status(404).json({ error: 'Experiment not found.' });
+  const { room, sessions, experimentId, createdAt } = experiment;
+  return res.json({ experimentId, roomId: room.id, createdAt, status: room.status, stage: room.stage, score: room.score, missed: room.missed, players: room.players.map(({ id, name, gc, gr }) => ({ id, name, position: { c: gc, r: gr } })), map: engine.map(room), notepad: room.notepad, macros: room.macros, tickets: room.tickets, world: { buns: room.buns, ingredients: room.ingredients, plates: room.plates }, events: room.eventLog.slice(-100), transcripts: { eventsJsonl: path.relative(__dirname, transcriptPaths(experimentId, sessions[0].brand).events) } });
+});
+
+wss.on('connection', ws => {
+  send(ws, { type: 'connected' });
+  ws.on('message', raw => handleSocketMessage(ws, raw));
   ws.on('close', () => leaveRoom(ws.player));
   ws.on('error', err => console.error('WebSocket error:', err.message));
 });
@@ -355,26 +545,31 @@ wss.on('connection', ws => {
 function broadcastEvent(room, message) { room.players.forEach(player => send(player.ws, message)); }
 
 function loadStage(room, stageId, now = Date.now()) {
-  room.stage = stageId;
-  // A new stage is a new kitchen world. Shared notes/macros and the session
-  // score remain, while physical items and outstanding tickets do not carry on.
-  room.buns = []; room.ingredients = []; room.plates = []; room.tickets = [];
-  room.nextTicketAt = now + 5000;
-  room.stageStartedAt = now;
-  room.customerMessage = stageId >= 2 ? 'A new customer is waiting.' : '';
+  engine.resetStage(room, stageId, now);
+  [...agentTokens.values()].filter(session => session.room === room).forEach(session => { session.notepadOpen = false; });
+  const experiment = experimentForRoom(room);
+  if (experiment) database.saveRoom(experiment.experimentId, room);
   console.log(`[${room.id}] loaded ${STAGES[stageId].name}.`);
 }
 
 function updateTickets(room, now) {
   if (!room.nextTicketAt) room.nextTicketAt = now + 5000;
   if (now >= room.nextTicketAt && room.tickets.length < 4) {
-    const recipes = STAGES[room.stage].recipes;
-    const recipe = recipes[Math.floor(Math.random() * recipes.length)];
-    room.tickets.push({ ...recipe, id: `${now}-${Math.random()}`, expiresAt: now + recipe.time * 1000 });
+    const recipe = engine.nextRecipe(room);
+    const ticket = { ...recipe, id: `${now}-${Math.random()}`, expiresAt: now + recipe.time * 1000 };
+    room.tickets.push(ticket);
+    const experiment = experimentForRoom(room);
+    const player = room.players.find(member => room.activePlayerIds.includes(member.id));
+    if (experiment && player) database.saveTicketEvent(experiment.experimentId, player, room.stage, ticket, 'issued', null, now);
     room.nextTicketAt = now + (9 + Math.random() * 6) * 1000;
   }
   const remaining = room.tickets.filter(ticket => ticket.expiresAt <= now);
-  if (remaining.length) { room.missed += remaining.length; room.tickets = room.tickets.filter(ticket => ticket.expiresAt > now); }
+  if (remaining.length) {
+    const experiment = experimentForRoom(room);
+    const player = room.players.find(member => room.activePlayerIds.includes(member.id));
+    if (experiment && player) remaining.forEach(ticket => database.saveTicketEvent(experiment.experimentId, player, room.stage, ticket, 'expired', null, now));
+    room.missed += remaining.length; room.tickets = room.tickets.filter(ticket => ticket.expiresAt > now);
+  }
 }
 function updateIngredientTimers(room, now) {
   room.ingredients.forEach(ingredient => {
@@ -383,7 +578,7 @@ function updateIngredientTimers(room, now) {
       ingredient.chopped = true; room.customerMessage = 'The ingredient looks different now.';
     } else if (ingredient.processing === 'grill') {
       ingredient.cookedSides += 1;
-      room.customerMessage = ingredient.cookedSides === 1 ? 'The chicken changed on one side.' : 'The chicken changed again.';
+      room.customerMessage = 'The chicken looks grilled now.';
     }
     ingredient.processing = null; ingredient.processStartedAt = null; ingredient.processEndsAt = null;
   });
@@ -401,19 +596,27 @@ function advanceRoom(room) {
     }
     if (player && !slot.entered && now >= slot.startAt && now < slot.endAt) {
       if (room.stage !== slot.stageId) loadStage(room, slot.stageId, now);
+      engine.admit(room, player);
       slot.entered = true; room.activePlayerIds.push(player.id);
+      const experiment = experimentForRoom(room);
+      if (experiment) { database.activateTurn(experiment.experimentId, slot, room); database.saveRoom(experiment.experimentId, room); }
       console.log(`[${room.id}] ${player.name} entered the kitchen.`);
       send(player.ws, { type: 'enter-game', roomId: room.id }); broadcastRoom(room);
     }
     if (!slot.ended && now >= slot.endAt) {
       slot.ended = true; room.activePlayerIds = room.activePlayerIds.filter(id => id !== slot.playerId);
+      const experiment = experimentForRoom(room);
+      if (experiment) { database.endTurn(experiment.experimentId, slot, room); database.saveRoom(experiment.experimentId, room); }
       if (player) send(player.ws, { type: 'shift-ended' });
       broadcastRoom(room);
     }
   });
   broadcastRoom(room);
   if (room.schedule.length && room.schedule.every(slot => slot.ended)) {
-    clearInterval(room.timer); room.status = 'finished'; broadcastEvent(room, { type: 'session-finished' }); broadcastRoom(room);
+    clearInterval(room.timer); room.status = 'finished';
+    const experiment = experimentForRoom(room);
+    if (experiment) database.saveRoom(experiment.experimentId, room);
+    broadcastEvent(room, { type: 'session-finished' }); broadcastRoom(room);
   }
 }
 function startSession(room, host) {

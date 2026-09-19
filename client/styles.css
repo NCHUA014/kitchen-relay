@@ -93,6 +93,7 @@ canvas { display: block; background: var(--floor); }
   color: var(--accent); margin-bottom: 4px;
 }
 #rules .rules-title:not(:first-child) { margin-top: 12px; }
+#rules .handover-reminder { margin-top: 7px; color: #5d4427; font-style: italic; }
 #rules kbd {
   background: #3a2a1f; border: 1px solid #574031; border-radius: 3px;
   padding: 0 5px; font-size: 10px; color: var(--ink);
@@ -150,6 +151,7 @@ kbd {
 .notepad-header span, #note-status { color: var(--ink-dim); font-size: 11px; }
 .notepad label { display: block; margin-bottom: 6px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--ink-dim); }
 .notepad textarea { width: 100%; min-height: 90px; resize: vertical; padding: 10px; border: 1px solid var(--counter-top); border-radius: 4px; background: #1b1410; color: var(--ink); font: 13px/1.45 'Courier New', monospace; }
+#notepad-editor { min-height: 360px; }
 .notepad input { width: 100%; margin-bottom: 14px; padding: 10px; border: 1px solid var(--counter-top); border-radius: 4px; background: #1b1410; color: var(--ink); font: 13px 'Courier New', monospace; }
 .notepad-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0 18px; }
 .notepad-actions button, .note-buttons button { padding: 7px 10px; font-size: 11px; }

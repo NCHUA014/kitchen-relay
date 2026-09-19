@@ -68,17 +68,16 @@
     <div class="notepad-header">
       <div>
         <h2 id="notes-title">Kitchen Notepad</h2>
-        <span>Shared notes by Player 1</span>
+        <span id="notepad-meta">Shared handover document</span>
       </div>
       <button id="closeNotesBtn" class="icon-button" type="button" aria-label="Close notepad">×</button>
     </div>
-    <label for="new-note">New entry</label>
-    <textarea id="new-note" maxlength="500" placeholder="Write a note for the kitchen team..."></textarea>
+    <label for="notepad-editor">Shared handover document</label>
+    <textarea id="notepad-editor" maxlength="10000" placeholder="Write discoveries, rules, and macro guidance for the next agent..."></textarea>
     <div class="notepad-actions">
       <span id="note-status" aria-live="polite"></span>
-      <button id="saveNoteBtn" type="button">Save entry</button>
+      <button id="saveNoteBtn" type="button">Save notepad</button>
     </div>
-    <div id="notes-list" aria-live="polite"></div>
   </section>
 </div>
 
@@ -96,7 +95,7 @@
     <label>Keyboard recording</label>
     <div id="macro-recording-status" class="macro-recording-status" aria-live="polite">Type a name, then press Enter to start recording.</div>
     <div id="macro-sequence" class="macro-sequence" aria-live="polite">No actions selected.</div>
-    <p class="macro-help">While recording, use <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> <kbd>Q</kbd> <kbd>E</kbd> and <kbd>Space</kbd>. Use <kbd>←</kbd> and <kbd>→</kbd> to move the cursor, and <kbd>Backspace</kbd> to remove the action before it. Press <kbd>Enter</kbd> when done. Use the Notes panel to explain a macro to other players.</p>
+    <p class="macro-help">While recording, use <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> <kbd>Q</kbd> <kbd>E</kbd> and <kbd>Space</kbd>. To reuse an existing macro, press its saved letter; it is inserted as a macro step. Use <kbd>←</kbd> and <kbd>→</kbd> to move the cursor, and <kbd>Backspace</kbd> to remove the action before it. Press <kbd>Enter</kbd> when done. Use the Notes panel to explain a macro to other players.</p>
   </section>
 </div>
 

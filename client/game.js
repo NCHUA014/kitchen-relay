@@ -15,6 +15,7 @@
     <div>Serve matching tickets before they expire.</div>
     <div class="rules-title">Notes</div>
     <div>Open Notes to read discoveries from earlier agents or leave a handover note.</div>
+    <div class="handover-reminder">Note: You will be responsible for the cultural transmission for the next LLM to play. Make your notes as comprehensive as possible.</div>
     <div class="rules-title">Macros</div>
     <div>Create, edit, or delete saved keyboard sequences for later agents.</div>`;
 
@@ -58,11 +59,17 @@
     } else {
       // Stage 2 deliberately preserves every Stage 1 location.
       setStation(2, 0, 'crate_tomato'); setStation(4, 0, 'crate_lettuce'); setStation(6, 0, 'crate_bun');
-      setStation(2, ROWS - 1, 'board'); setStation(3, ROWS - 1, 'board');
+      if (stageId === 2) { setStation(2, ROWS - 1, 'board'); setStation(3, ROWS - 1, 'board'); }
       setStation(5, ROWS - 1, 'stove'); setStation(6, ROWS - 1, 'stove');
       setStation(11, 0, 'plates'); setStation(0, 5, 'trash'); setStation(COLS - 1, 5, 'serve');
       if (stageId === 2) setStation(8, 0, 'crate_chicken');
     }
+  }
+  function applyServerMap(map) {
+    if (!Array.isArray(map) || map.length !== ROWS) return;
+    map.forEach((row, r) => row.forEach((tile, c) => {
+      if (grid[r]?.[c] && typeof tile?.type === 'string') grid[r][c].type = tile.type;
+    }));
   }
   loadStageMap(1);
 
@@ -147,6 +154,36 @@
   const noteStatus = document.getElementById('note-status');
   let notes = loadNotes();
   let editingNoteId = null;
+  const notepadEditor = document.getElementById('notepad-editor');
+  const notepadMeta = document.getElementById('notepad-meta');
+  let notepad = loadNotepad();
+
+  function loadNotepad() {
+    if (window.kitchenSession) return { text: '', author: null, updatedAt: null, revision: 0 };
+    try { return { text: '', author: null, updatedAt: null, revision: 0, ...JSON.parse(localStorage.getItem('kitchen-relay-notepad') || '{}') }; }
+    catch { return { text: '', author: null, updatedAt: null, revision: 0 }; }
+  }
+
+  function renderNotepad() {
+    notepadEditor.value = notepad.text || '';
+    notepadMeta.textContent = notepad.updatedAt
+      ? `Last saved by ${notepad.author || 'a player'} · ${new Date(notepad.updatedAt).toLocaleString()}`
+      : 'Shared handover document — not saved yet';
+  }
+
+  function openNotepad() {
+    notesModal.classList.remove('hidden'); noteStatus.textContent = '';
+    renderNotepad(); notepadEditor.focus();
+    if (window.kitchenSession?.connected) window.kitchenSession.send({ type: 'notepad-open' });
+  }
+
+  function saveNotepad() {
+    const text = notepadEditor.value.trim();
+    if (text === (notepad.text || '')) { noteStatus.textContent = 'Nothing changed, so there is nothing to save.'; return; }
+    if (window.kitchenSession?.connected) { window.kitchenSession.send({ type: 'notepad-save', text }); noteStatus.textContent = 'Saving handover document…'; return; }
+    notepad = { text, author: 'Player 1', updatedAt: Date.now(), revision: (notepad.revision || 0) + 1 };
+    localStorage.setItem('kitchen-relay-notepad', JSON.stringify(notepad)); noteStatus.textContent = 'Saved for the next player.'; renderNotepad();
+  }
 
   function loadNotes() {
     if (window.kitchenSession) return [];
@@ -224,26 +261,19 @@
     });
   }
 
-  document.getElementById('notesBtn').addEventListener('click', () => {
-    notesModal.classList.remove('hidden'); newNoteInput.focus(); renderNotes();
-  });
+  document.getElementById('notesBtn').addEventListener('click', openNotepad);
   document.getElementById('closeNotesBtn').addEventListener('click', () => notesModal.classList.add('hidden'));
   notesModal.addEventListener('click', e => { if (e.target === notesModal) notesModal.classList.add('hidden'); });
-  document.getElementById('saveNoteBtn').addEventListener('click', () => {
-    const text = newNoteInput.value.trim();
-    if (!text) { noteStatus.textContent = 'Write a note before saving.'; return; }
-    if (window.kitchenSession?.connected) { window.kitchenSession.send({ type: 'note-create', text }); newNoteInput.value = ''; noteStatus.textContent = 'Saved for the team.'; return; }
-    notes.push({ id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`, author: NOTE_AUTHOR, text, updatedAt: Date.now() });
-    saveNotes(); newNoteInput.value = ''; noteStatus.textContent = 'Saved.'; renderNotes();
-  });
+  document.getElementById('saveNoteBtn').addEventListener('click', saveNotepad);
   window.addEventListener('kitchen-room-state', event => {
     serverClockOffset = Number(event.detail.serverNow || Date.now()) - Date.now();
     if (event.detail.stage && event.detail.stage !== activeStageId) loadStageMap(event.detail.stage, event.detail.bridgeRow);
     else if (event.detail.stage >= 4) updateMovingBridge(event.detail.bridgeRow);
+    applyServerMap(event.detail.map);
     document.getElementById('stage').textContent = event.detail.stageName || `Stage ${event.detail.stage || 1}`;
     document.getElementById('customer-message').textContent = event.detail.customerMessage || 'Waiting for an order.';
     document.getElementById('stage-note').classList.toggle('hidden', event.detail.stage !== 5);
-    notes = event.detail.notes || [];
+    notepad = event.detail.notepad || { text: '', author: null, updatedAt: null, revision: 0 };
     score = event.detail.score || 0; missed = event.detail.missed || 0;
     tickets = event.detail.tickets || [];
     remotePlayers.forEach((_, id) => { if (!event.detail.activePlayerIds?.includes(id) || !event.detail.players.some(member => member.id === id)) remotePlayers.delete(id); });
@@ -251,7 +281,7 @@
     applySharedBuns(event.detail.buns);
     applySharedIngredients(event.detail.ingredients);
     applySharedPlates(event.detail.plates);
-    if (editingNoteId === null) renderNotes();
+    if (notesModal.classList.contains('hidden')) renderNotepad();
     document.getElementById('score').textContent = score;
     document.getElementById('missed').textContent = missed;
     if (spectating) {
@@ -261,7 +291,7 @@
     }
     renderTickets();
   });
-  renderNotes();
+  renderNotepad();
 
   // ---------- Persistent action macros ----------
   const MACRO_STORAGE_KEY = 'kitchen-relay-macros';
@@ -288,7 +318,7 @@
       const saved = JSON.parse(localStorage.getItem(MACRO_STORAGE_KEY) || '[]');
       return Array.isArray(saved) ? saved.filter(macro =>
         typeof macro.name === 'string' && MACRO_SHORTCUTS.includes(macro.shortcut) &&
-        Array.isArray(macro.sequence) && macro.sequence.every(action => MACRO_ACTIONS.has(action))
+        Array.isArray(macro.sequence) && macro.sequence.every(action => MACRO_ACTIONS.has(action) || (typeof action === 'string' && action.startsWith('macro:')))
       ) : [];
     } catch {
       return [];
@@ -299,7 +329,39 @@
     if (window.kitchenSession?.connected) { window.kitchenSession.send({ type: 'macros-sync', macros }); return; }
     localStorage.setItem(MACRO_STORAGE_KEY, JSON.stringify(macros));
   }
-  function displayAction(action) { return action === ' ' ? 'Space' : action.toUpperCase(); }
+  function nestedMacroId(action) { return typeof action === 'string' && action.startsWith('macro:') ? action.slice(6) : null; }
+  function displayAction(action) {
+    const nestedId = nestedMacroId(action);
+    if (nestedId) return `[${macros.find(macro => macro.id === nestedId)?.name || 'missing macro'}]`;
+    return action === ' ' ? 'Space' : action.toUpperCase();
+  }
+
+  function macroReferences(macroId, targetId, seen = new Set()) {
+    if (macroId === targetId || seen.has(macroId)) return macroId === targetId;
+    seen.add(macroId);
+    const macro = macros.find(item => item.id === macroId);
+    return Boolean(macro?.sequence.some(action => {
+      const childId = nestedMacroId(action);
+      return childId && macroReferences(childId, targetId, seen);
+    }));
+  }
+
+  function expandMacro(macro, seen = new Set()) {
+    if (seen.has(macro.id)) return null;
+    const nextSeen = new Set(seen).add(macro.id);
+    const expanded = [];
+    for (const action of macro.sequence) {
+      const childId = nestedMacroId(action);
+      if (!childId) expanded.push(action);
+      else {
+        const child = macros.find(item => item.id === childId);
+        const childSequence = child && expandMacro(child, nextSeen);
+        if (!childSequence) return null;
+        expanded.push(...childSequence);
+      }
+    }
+    return expanded;
+  }
 
   function renderPendingMacroLegacy() {
     macroSequenceEl.textContent = pendingMacroSequence.length
@@ -361,12 +423,14 @@
 
   function runMacro(macro) {
     if (!running || macroRunning) return;
+    const sequence = expandMacro(macro);
+    if (!sequence) { flashMsg(`${macro.name} has a missing or circular macro call.`, 'bad'); return; }
     macroRunning = true;
     flashMsg(`Running ${macro.name}.`);
     let index = 0;
     const nextAction = () => {
-      if (!running || index >= macro.sequence.length) { macroRunning = false; return; }
-      const action = macro.sequence[index++];
+      if (!running || index >= sequence.length) { macroRunning = false; return; }
+      const action = sequence[index++];
       if (action === 'w' || action === 'a' || action === 's' || action === 'd') {
         const directions = { w: [0, -1], a: [-1, 0], s: [0, 1], d: [1, 0] };
         const [dc, dr] = directions[action];
@@ -395,7 +459,13 @@
     if (macroModal.classList.contains('hidden') || e.repeat || e.target.matches('textarea, input, button')) return;
     if (macroCreationStage === 'record') {
       const action = e.key.toLowerCase();
-      if (MACRO_ACTIONS.has(action)) {
+      const nestedMacro = macros.find(macro => macro.shortcut === action);
+      if (nestedMacro) {
+        e.preventDefault();
+        if (editingMacroId && macroReferences(nestedMacro.id, editingMacroId)) { macroRecordingStatus.textContent = 'That macro would create a circular call.'; return; }
+        pendingMacroSequence.splice(macroCursor, 0, `macro:${nestedMacro.id}`); macroCursor++; renderPendingMacro();
+        macroRecordingStatus.textContent = `${nestedMacro.name} inserted as a reusable macro step.`;
+      } else if (MACRO_ACTIONS.has(action)) {
         e.preventDefault(); pendingMacroSequence.splice(macroCursor, 0, action); macroCursor++; renderPendingMacro();
       } else if (e.key === 'ArrowLeft') {
         e.preventDefault(); macroCursor = Math.max(0, macroCursor - 1); renderPendingMacro();

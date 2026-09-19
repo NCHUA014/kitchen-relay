@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kitchen Relay — Researcher Observer</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    .observer { max-width: 980px; margin: 32px auto; padding: 24px; background: var(--panel); border: 1px solid var(--counter-top); border-radius: 8px; color: var(--ink); }
+    .observer-controls { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
+    .observer input { flex: 1 1 260px; padding: 8px; }
+    .observer-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 12px; }
+    .observer-card { padding: 12px; background: #f5ead3; border: 1px solid #c5aa82; border-radius: 6px; }
+    #observer-map { display: grid; grid-template-columns: repeat(17, 26px); gap: 1px; width: max-content; max-width: 100%; overflow: auto; padding: 6px; background: #4d3828; border-radius: 6px; }
+    .observer-cell { width: 26px; height: 26px; display: grid; place-items: center; background: #e7d1ad; font-size: 15px; }
+    .observer-cell.counter { background: #8c6c52; } .observer-cell.abyss { background: #171b2c; } .observer-cell.bridge { background: #b68b42; }
+    #observer-events { max-height: 350px; overflow: auto; white-space: pre-wrap; background: #261d16; color: #f6e8cc; padding: 12px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <main class="observer">
+    <h1>Researcher Observer</h1>
+    <p>Read-only view. This page cannot act in the kitchen or access an agent token.</p>
+    <div class="observer-controls">
+      <input id="researcher-token" type="password" placeholder="Researcher token">
+      <input id="experiment-id" placeholder="Experiment ID">
+      <button id="load-experiment" type="button">Observe</button>
+    </div>
+    <p id="observer-status" aria-live="polite">Enter a researcher token and experiment ID.</p>
+    <section id="observer-data" class="hidden">
+      <div id="observer-summary" class="observer-grid"></div>
+      <h2>Live kitchen map</h2>
+      <div id="observer-map" aria-label="Read-only kitchen map"></div>
+      <h2>Recent server events</h2>
+      <pre id="observer-events"></pre>
+    </section>
+  </main>
+  <script src="researcher.js"></script>
+</body>
+</html>
