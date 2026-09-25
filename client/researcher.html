@@ -6,21 +6,40 @@
   <title>Kitchen Relay — Researcher Observer</title>
   <link rel="stylesheet" href="styles.css">
   <style>
-    .observer { max-width: 980px; margin: 32px auto; padding: 24px; background: var(--panel); border: 1px solid var(--counter-top); border-radius: 8px; color: var(--ink); }
-    .observer-controls { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
-    .observer input { flex: 1 1 260px; padding: 8px; }
-    .observer-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 12px; }
-    .observer-card { padding: 12px; background: #f5ead3; border: 1px solid #c5aa82; border-radius: 6px; }
-    #observer-map { display: grid; grid-template-columns: repeat(17, 26px); gap: 1px; width: max-content; max-width: 100%; overflow: auto; padding: 6px; background: #4d3828; border-radius: 6px; }
-    .observer-cell { width: 26px; height: 26px; display: grid; place-items: center; background: #e7d1ad; font-size: 15px; }
+    html, body { display: block; overflow: auto; }
+    .observer { width: min(1120px, calc(100vw - 32px)); margin: 24px auto; padding: 22px; background: var(--panel); border: 1px solid var(--counter-top); border-radius: 8px; color: var(--ink); }
+    .observer h1 { margin: 0; color: var(--accent); font-size: 23px; letter-spacing: 2px; }
+    .observer-intro { margin: 8px 0 16px; color: var(--ink-dim); font-size: 12px; }
+    .observer-controls, .observer-tools { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+    .observer input { min-width: 250px; flex: 1 1 300px; padding: 9px; border: 1px solid var(--counter-top); border-radius: 4px; background: #1b1410; color: var(--ink); font: inherit; }
+    .observer-tools button { background: #3a2a1f; color: var(--ink); border: 1px solid var(--counter-top); }
+    .observer-tools button.active { background: var(--accent); color: #241811; }
+    #observer-status { min-height: 18px; color: var(--ink-dim); font-size: 12px; }
+    .spectator-hud { display: grid; grid-template-columns: repeat(5, minmax(130px, 1fr)); gap: 8px; margin: 14px 0; }
+    .observer-card { min-height: 64px; padding: 10px; background: #f5ead3; border: 1px solid #c5aa82; border-radius: 6px; color: #2a1f18; }
+    .observer-card strong { display: block; margin-bottom: 6px; color: #795d42; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; }
+    .observer-card div { font-weight: bold; overflow-wrap: anywhere; }
+    #observer-tickets { display: flex; gap: 8px; min-height: 68px; overflow-x: auto; margin-bottom: 14px; }
+    .observer-ticket { min-width: 150px; padding: 9px; background: #f2e6d5; color: #2a1f18; border-radius: 4px; box-shadow: 0 3px 0 #b8a687; font-size: 11px; }
+    .observer-ticket strong { display: block; margin-bottom: 5px; }
+    .observer-ticket small { color: #795d42; }
+    #observer-map { display: grid; grid-template-columns: repeat(17, 40px); gap: 1px; width: max-content; max-width: 100%; overflow: auto; padding: 7px; background: #4d3828; border-radius: 6px; }
+    .observer-cell { width: 40px; height: 40px; display: grid; place-items: center; background: #e7d1ad; font-size: 22px; }
     .observer-cell.counter { background: #8c6c52; } .observer-cell.abyss { background: #171b2c; } .observer-cell.bridge { background: #b68b42; }
-    #observer-events { max-height: 350px; overflow: auto; white-space: pre-wrap; background: #261d16; color: #f6e8cc; padding: 12px; border-radius: 6px; }
+    #observer-events { max-height: 180px; overflow: auto; white-space: pre-wrap; background: #261d16; color: #f6e8cc; padding: 12px; border-radius: 6px; font-size: 11px; }
+    #research-panel, #agent-panel-mirror { margin: 12px 0; padding: 14px; background: #f5ead3; color: #2a1f18; border: 2px solid var(--accent); border-radius: 6px; }
+    #agent-panel-mirror { border-color: #7fb069; }
+    .research-panel-header { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    .research-panel-header h2 { margin: 0; color: #5d4427; font-size: 16px; }
+    .research-entry { margin-top: 9px; padding-top: 9px; border-top: 1px solid #c5aa82; white-space: pre-wrap; font: 12px/1.45 'Courier New', monospace; }
+    .research-entry small { display: block; margin-bottom: 4px; color: #795d42; }
+    @media (max-width: 720px) { .spectator-hud { grid-template-columns: repeat(2, 1fr); } .observer { width: min(100vw - 16px, 1120px); margin: 8px auto; } }
   </style>
 </head>
 <body>
   <main class="observer">
     <h1>Researcher Observer</h1>
-    <p>Read-only view. This page cannot act in the kitchen or access an agent token.</p>
+    <p class="observer-intro">Read-only spectator view. It cannot act in the kitchen or access an agent token.</p>
     <div class="observer-controls">
       <input id="researcher-token" type="password" placeholder="Researcher token">
       <input id="experiment-id" placeholder="Experiment ID">
@@ -28,7 +47,15 @@
     </div>
     <p id="observer-status" aria-live="polite">Enter a researcher token and experiment ID.</p>
     <section id="observer-data" class="hidden">
-      <div id="observer-summary" class="observer-grid"></div>
+      <nav class="observer-tools" aria-label="Research panels">
+        <button type="button" data-panel="notes">Notes</button>
+        <button type="button" data-panel="macros">Macros</button>
+        <button type="button" data-panel="react">ReAct trail</button>
+      </nav>
+      <section id="research-panel" class="hidden" aria-live="polite"></section>
+      <section id="agent-panel-mirror" class="hidden" aria-live="polite"></section>
+      <section class="spectator-hud" id="observer-summary"></section>
+      <section id="observer-tickets" aria-label="Current tickets"></section>
       <h2>Live kitchen map</h2>
       <div id="observer-map" aria-label="Read-only kitchen map"></div>
       <h2>Recent server events</h2>

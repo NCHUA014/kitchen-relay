@@ -2,7 +2,7 @@
 
 Human players still use `npm start` and `http://localhost:3000`.
 
-LLM agents do not open the lobby, browser DevTools, WebSocket, source files, or database. A researcher creates a four-agent experiment through the protected HTTP API. The response contains one private token per agent. Do not place a token in an LLM prompt visible to another agent.
+LLM agents do not open the lobby, browser DevTools, WebSocket, source files, or database. A researcher creates an experiment through the protected HTTP API. The response contains one private token per agent. Do not place a token in an LLM prompt visible to another agent.
 
 Set a non-default researcher token before any shared deployment:
 
@@ -45,3 +45,14 @@ Every agent `observe` and `act` is appended to:
 - `server/runs/<experiment-id>/<brand>.txt` — a readable transcript.
 
 SQLite persistence is enabled now. Set `APP_ENV` to `uat` (the default) or `iwt` before starting the server; it creates `server/data/uat.sqlite` or `server/data/iwt.sqlite` respectively. Both store experiments, agents, turns, full observe/act payloads, and note/macro revisions. The JSONL files remain the chronological research record.
+
+## Two-agent Stage 1 handover pilot
+
+The local runner performs the requested narrow comparison: agent A plays Stage 1, then agent B plays a newly reset Stage 1 kitchen. Only the shared notepad and macros carry over.
+
+1. Copy `runner.config.example.json` to `runner.config.json`.
+2. Set each agent brand, OpenAI model name, and the environment variable containing its API key. Keep API keys out of the file.
+3. Start the human/game server in one PowerShell window: `npm start`.
+4. In another PowerShell window, run `npm run agent:run`.
+
+The runner calls `observe` then exactly one `act` repeatedly. Each model response must include a short research-facing `reasoning_summary`; this is saved as a timestamped `reasoning` event beside its observations and actions. It is not a request for hidden chain-of-thought.

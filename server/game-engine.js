@@ -56,14 +56,14 @@ function hashSeed(value) {
 
 class GameEngine {
   createRoom(id) {
-    return { id, players: [], notepad: { text: '', author: null, updatedAt: null, revision: 0 }, macros: [], score: 0, missed: 0, buns: [], nextBunId: 1, ingredients: [], nextIngredientId: 1, plates: [], nextPlateId: 1, tickets: [], nextTicketAt: null, ticketSequenceIndex: 0, stage: 1, stageStartedAt: Date.now(), customerMessage: '', status: 'waiting', hostId: null, activePlayerIds: [], schedule: [], timer: null, eventLog: [], rngState: hashSeed(id) };
+    return { id, players: [], notepad: { text: '', author: null, updatedAt: null, revision: 0 }, macros: [], researcherPanel: null, score: 0, missed: 0, buns: [], nextBunId: 1, ingredients: [], nextIngredientId: 1, plates: [], nextPlateId: 1, tickets: [], nextTicketAt: null, ticketSequenceIndex: 0, stage: 1, stageStartedAt: Date.now(), customerMessage: '', status: 'waiting', hostId: null, activePlayerIds: [], schedule: [], timer: null, eventLog: [], rngState: hashSeed(id) };
   }
 
   map(room, now) { return stageMap(room.stage, room, now); }
   bridgeRow(room, now) { return bridgeRow(room, now); }
   tileAt(room, c, r, now) { return this.map(room, now)[r]?.[c] || null; }
   isWalkable(room, c, r, now) { return ['floor', 'bridge'].includes(this.tileAt(room, c, r, now)?.type); }
-  isDropTile(room, c, r, now) { return ['floor', 'bridge', 'counter'].includes(this.tileAt(room, c, r, now)?.type); }
+  isDropTile(room, c, r, now) { return this.tileAt(room, c, r, now)?.type === 'floor'; }
   spawnFor(room, playerId) {
     const index = Math.max(0, room.players.findIndex(player => player.id === playerId));
     return { gc: COLS - 2 - (index % 2), gr: ROWS - 2 - Math.floor(index / 2), dir: { x: 0, y: 1 } };
@@ -85,6 +85,10 @@ class GameEngine {
     this.record(room, 'stage-reset', { stageId });
   }
   nextRecipe(room) {
+    if (room.stage === 1) {
+      const sequence = [STAGE_ONE_RECIPES[0], STAGE_ONE_RECIPES[0], STAGE_ONE_RECIPES[1], STAGE_ONE_RECIPES[1]];
+      if (room.ticketSequenceIndex < sequence.length) return sequence[room.ticketSequenceIndex++];
+    }
     if (room.stage === 2) {
       const sequence = [STAGE_TWO_RECIPES[0], STAGE_TWO_RECIPES[0], STAGE_TWO_RECIPES[1], STAGE_TWO_RECIPES[1], STAGE_TWO_RECIPES[2]];
       if (room.ticketSequenceIndex < sequence.length) return sequence[room.ticketSequenceIndex++];

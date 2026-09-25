@@ -1,0 +1,12 @@
+{
+  "baseUrl": "http://localhost:3000",
+  "researcherTokenEnv": "RESEARCHER_TOKEN",
+  "turnSeconds": 180,
+  "maxActionsPerTurn": 500,
+  "actionDelayMs": 150,
+  "pollMs": 500,
+  "agents": [
+    { "brand": "Codex", "provider": "openai", "model": "SET_A_REAL_OPENAI_MODEL_NAME", "apiKeyEnv": "OPENAI_API_KEY", "promptVersion": "runner-v1" },
+    { "brand": "Second-LLM", "provider": "openai", "model": "SET_A_REAL_OPENAI_MODEL_NAME", "apiKeyEnv": "OPENAI_API_KEY", "promptVersion": "runner-v1" }
+  ]
+}

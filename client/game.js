@@ -21,8 +21,7 @@
 
   // ---------- Grid / stations ----------
   // Types: 'floor','counter','crate','board','stove','plates','serve','trash'
-  // Every edge tile is a solid 'counter' by default (you can set items down on
-  // any of them). Specific stations below overwrite particular edge tiles.
+    // Every edge tile is a solid counter. Counters cannot store items.
   const grid = [];
   for (let r = 0; r < ROWS; r++) {
     const row = [];
@@ -318,7 +317,7 @@
       const saved = JSON.parse(localStorage.getItem(MACRO_STORAGE_KEY) || '[]');
       return Array.isArray(saved) ? saved.filter(macro =>
         typeof macro.name === 'string' && MACRO_SHORTCUTS.includes(macro.shortcut) &&
-        Array.isArray(macro.sequence) && macro.sequence.every(action => MACRO_ACTIONS.has(action) || (typeof action === 'string' && action.startsWith('macro:')))
+        Array.isArray(macro.sequence) && macro.sequence.every(action => MACRO_ACTIONS.has(action) || (typeof action === 'string' && (action.startsWith('macro:') || /^[a-z]$/.test(action))))
       ) : [];
     } catch {
       return [];
@@ -329,7 +328,11 @@
     if (window.kitchenSession?.connected) { window.kitchenSession.send({ type: 'macros-sync', macros }); return; }
     localStorage.setItem(MACRO_STORAGE_KEY, JSON.stringify(macros));
   }
-  function nestedMacroId(action) { return typeof action === 'string' && action.startsWith('macro:') ? action.slice(6) : null; }
+  function nestedMacroId(action) {
+    if (typeof action !== 'string') return null;
+    if (action.startsWith('macro:')) return action.slice(6);
+    return macros.find(macro => macro.shortcut === action)?.id || null;
+  }
   function displayAction(action) {
     const nestedId = nestedMacroId(action);
     if (nestedId) return `[${macros.find(macro => macro.id === nestedId)?.name || 'missing macro'}]`;
@@ -551,7 +554,7 @@
     for (let distance = 1; distance <= 3; distance++) {
       const c = player.gc + dir.x * distance, r = player.gr + dir.y * distance;
       if (r < 0 || r >= ROWS || c < 0 || c >= COLS) break;
-      if (!['floor', 'counter', 'bridge'].includes(grid[r][c].type)) break;
+      if (grid[r][c].type !== 'floor') break;
       if (activeStageId >= 2 && sharedObjectAt(c, r)) break;
       target = { c, r };
     }
@@ -705,16 +708,6 @@
         }
       } else if (type === 'trash') {
         if (player.holding) { player.holding = null; flashMsg('Tossed it — gone for good.'); }
-      } else if (type === 'counter') {
-        if (player.holding && !f.cell.item) {
-          f.cell.item = player.holding;
-          player.holding = null;
-          flashMsg('Set it down on the counter.');
-        } else if (f.cell.item && !player.holding) {
-          player.holding = f.cell.item;
-          f.cell.item = null;
-          flashMsg('Picked it back up.');
-        }
       } else if (type === 'floor') {
         if (f.cell.item && !player.holding) {
           player.holding = f.cell.item;
@@ -757,7 +750,7 @@
           const r = startR + dir.y * d;
           if (r < 0 || r >= ROWS || c < 0 || c >= COLS) break;
           const cell = grid[r][c];
-          const canLand = (cell.type === 'floor' || cell.type === 'counter') && !cell.item;
+          const canLand = cell.type === 'floor' && !cell.item;
           if (canLand) { landC = c; landR = r; }
           else break; // blocked by a wall/station/occupied tile - stops here
         }
@@ -798,11 +791,11 @@
           window.kitchenSession.send({ type: 'plate-add-floor-item', plateId: player.holding.sharedItemId, c: f.c, r: f.r }); return;
         }
         if (!player.holding && floorIngredient) { window.kitchenSession.send({ type: 'ingredient-pick', itemId: floorIngredient.id, item: floorIngredient.item, c: f.c, r: f.r }); return; }
-        if (player.holding?.sharedIngredient && (f.cell.type === 'floor' || f.cell.type === 'counter')) { window.kitchenSession.send({ type: 'ingredient-drop', itemId: player.holding.sharedItemId, c: f.c, r: f.r }); return; }
+        if (player.holding?.sharedIngredient && f.cell.type === 'floor') { window.kitchenSession.send({ type: 'ingredient-drop', itemId: player.holding.sharedItemId, c: f.c, r: f.r }); return; }
         if (!player.holding && f.cell.type === 'plates') { window.kitchenSession.send({ type: 'plate-create' }); return; }
         const floorPlate = sharedPlates.find(plate => plate.holderId === null && plate.c === f.c && plate.r === f.r);
         if (!player.holding && floorPlate) { window.kitchenSession.send({ type: 'plate-pick', itemId: floorPlate.id, c: f.c, r: f.r }); return; }
-        if (player.holding?.sharedPlate && (f.cell.type === 'floor' || f.cell.type === 'counter')) { window.kitchenSession.send({ type: 'plate-drop', itemId: player.holding.sharedItemId, c: f.c, r: f.r }); return; }
+        if (player.holding?.sharedPlate && f.cell.type === 'floor') { window.kitchenSession.send({ type: 'plate-drop', itemId: player.holding.sharedItemId, c: f.c, r: f.r }); return; }
         if (player.holding?.sharedPlate && f.cell.type === 'trash') { window.kitchenSession.send({ type: 'plate-delete', itemId: player.holding.sharedItemId }); return; }
         if (player.holding?.sharedPlate && f.cell.type.startsWith('crate_')) {
           const ingredient = f.cell.type.split('_')[1];
@@ -817,7 +810,7 @@
         if (!player.holding && floorBun) {
           window.kitchenSession.send({ type: 'bun-pick', itemId: floorBun.id, c: f.c, r: f.r }); return;
         }
-        if (player.holding?.sharedBun && (f.cell.type === 'floor' || f.cell.type === 'counter')) {
+        if (player.holding?.sharedBun && f.cell.type === 'floor') {
           window.kitchenSession.send({ type: 'bun-drop', itemId: player.holding.sharedItemId, c: f.c, r: f.r }); return;
         }
       }

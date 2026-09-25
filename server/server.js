@@ -21,6 +21,12 @@ const experiments = new Map();
 const agentTokens = new Map();
 const RESEARCHER_TOKEN = process.env.RESEARCHER_TOKEN || 'local-researcher-token';
 const RUNS_DIR = path.join(__dirname, 'runs');
+const STAGE_ONE_HANDOVER_PLAN = Object.freeze([
+  { playerIndex: 0, stageId: 1 },
+  { playerIndex: 1, stageId: 1 },
+]);
+const MACRO_BASIC_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', ' ']);
+const RESERVED_MACRO_SHORTCUTS = new Set(['w', 'a', 's', 'd', 'q', 'e']);
 let nextPlayerId = 1;
 
 app.use(express.json({ limit: '32kb' }));
@@ -93,6 +99,8 @@ function finishMacroRun(player, blocked = false) {
 
 function reject(player, message) {
   finishMacroRun(player, true);
+  const session = agentSessionForPlayer(player);
+  if (session) session.lastRejection = message;
   send(player.ws, { type: 'action-rejected', message });
 }
 
@@ -100,9 +108,126 @@ function stageProduce(room) {
   return ['tomato', ...(room.stage === 5 ? ['pickle'] : ['lettuce']), ...(room.stage >= 2 ? ['chicken'] : [])];
 }
 
+function runMacroKey(room, player, key) {
+  const directions = { w: [0, -1], a: [-1, 0], s: [0, 1], d: [1, 0] };
+  if (directions[key]) {
+    const [dc, dr] = directions[key];
+    const direction = { x: dc, y: dr };
+    if (!engine.move(room, player, { gc: player.gc + dc, gr: player.gr + dr, dir: direction })) {
+      if (player.dir?.x === direction.x && player.dir?.y === direction.y) return 'Macro movement is blocked.';
+      player.dir = direction;
+      engine.record(room, 'pivot', { playerId: player.id, dir: direction });
+    }
+    return null;
+  }
+  const direction = player.dir || { x: 0, y: 1 };
+  const facing = { c: player.gc + direction.x, r: player.gr + direction.y };
+  const tile = engine.tileAt(room, facing.c, facing.r);
+  if (!tile) return 'There is nothing to interact with in that direction.';
+  const held = heldItem(room, player);
+
+  if (key === ' ') {
+    if (tile.type !== 'serve') return 'Serve requires the serving window directly ahead.';
+    if (held?.kind !== 'plate') return 'Serve requires a plate in hand.';
+    handlePlayerMessage(player, { type: 'serve-order', plateId: held.item.id });
+    return agentSessionForPlayer(player)?.lastRejection || null;
+  }
+
+  if (key === 'q') {
+    if (!held) return 'Throw requires an item or plate in hand.';
+    const target = macroThrowTarget(room, player);
+    if (!target) return 'Throw has nowhere clear to land.';
+    let droppedItem;
+    if (held.kind === 'plate') {
+      if (held.item.contents.length) {
+        const contents = plateIngredient(held.item.contents.pop());
+        droppedItem = contents.item;
+        if (contents.item === 'bun') room.buns.push({ id: room.nextBunId++, holderId: null, ...target });
+        else { const ingredient = rawIngredient(contents.item, null, target.c, target.r); ingredient.id = room.nextIngredientId++; ingredient.chopped = contents.chopped; ingredient.cookedSides = contents.cookedSides; room.ingredients.push(ingredient); }
+      } else { droppedItem = 'plate'; held.item.holderId = null; held.item.c = target.c; held.item.r = target.r; }
+    } else { droppedItem = held.kind === 'bun' ? 'bun' : held.item.item; held.item.holderId = null; held.item.c = target.c; held.item.r = target.r; }
+    const session = agentSessionForPlayer(player);
+    if (session) session.lastActionDetails = { droppedItem, droppedAt: target };
+    return null;
+  }
+
+  if (key !== 'e') return 'Unknown macro key.';
+  const crateIngredient = tile.type.startsWith('crate_') ? tile.type.slice('crate_'.length) : null;
+  const stationIngredient = room.ingredients.find(item => item.holderId === null && item.c === facing.c && item.r === facing.r && item.station === tile.type);
+  const floorIngredient = room.ingredients.find(item => item.holderId === null && item.c === facing.c && item.r === facing.r && !item.station);
+  const floorBun = room.buns.find(item => item.holderId === null && item.c === facing.c && item.r === facing.r);
+  const floorPlate = room.plates.find(item => item.holderId === null && item.c === facing.c && item.r === facing.r);
+  if (!held && crateIngredient && stageProduce(room).includes(crateIngredient)) { const ingredient = rawIngredient(crateIngredient, player.id); ingredient.id = room.nextIngredientId++; room.ingredients.push(ingredient); return null; }
+  if (held?.kind === 'plate' && crateIngredient === 'bun') { held.item.contents.push(plateIngredient('bun')); return null; }
+  if (held?.kind === 'plate' && crateIngredient && stageProduce(room).includes(crateIngredient)) { held.item.contents.push(plateIngredient(crateIngredient)); return null; }
+  if (!held && tile.type === 'crate_bun') { room.buns.push({ id: room.nextBunId++, holderId: player.id, c: null, r: null }); return null; }
+  if (held?.kind === 'ingredient' && ['board', 'stove'].includes(tile.type) && !objectAt(room, facing.c, facing.r)) { held.item.holderId = null; held.item.c = facing.c; held.item.r = facing.r; held.item.station = tile.type; return null; }
+  if (held?.kind === 'plate' && stationIngredient) { held.item.contents.push(plateIngredient(stationIngredient)); room.ingredients.splice(room.ingredients.indexOf(stationIngredient), 1); return null; }
+  if (!held && stationIngredient) {
+    if ((stationIngredient.station === 'board' && ['tomato', 'lettuce', 'pickle'].includes(stationIngredient.item) && !stationIngredient.chopped) || (stationIngredient.station === 'stove' && stationIngredient.item === 'chicken' && stationIngredient.cookedSides < 1)) {
+      if (stationIngredient.processing) return 'That ingredient is already being prepared.';
+      stationIngredient.processing = stationIngredient.station === 'board' ? 'chop' : 'grill'; stationIngredient.processStartedAt = Date.now(); stationIngredient.processEndsAt = stationIngredient.processStartedAt + PREPARATION_MS; return null;
+    }
+    stationIngredient.holderId = player.id; stationIngredient.c = null; stationIngredient.r = null; stationIngredient.station = null; return null;
+  }
+  if (held?.kind === 'plate' && (floorIngredient || floorBun)) {
+    if (floorIngredient) { held.item.contents.push(plateIngredient(floorIngredient)); room.ingredients.splice(room.ingredients.indexOf(floorIngredient), 1); }
+    else { held.item.contents.push(plateIngredient('bun')); room.buns.splice(room.buns.indexOf(floorBun), 1); }
+    return null;
+  }
+  if (!held && floorIngredient) { floorIngredient.holderId = player.id; floorIngredient.c = null; floorIngredient.r = null; return null; }
+  if (!held && floorBun) { floorBun.holderId = player.id; floorBun.c = null; floorBun.r = null; return null; }
+  if (!held && tile.type === 'plates') { room.plates.push({ id: room.nextPlateId++, holderId: player.id, c: null, r: null, contents: [] }); return null; }
+  if (!held && floorPlate) { floorPlate.holderId = player.id; floorPlate.c = null; floorPlate.r = null; return null; }
+  if (held?.kind === 'plate' && tile.type === 'trash') { room.plates.splice(room.plates.indexOf(held.item), 1); return null; }
+  if (held && tile.type === 'floor' && !objectAt(room, facing.c, facing.r)) { held.item.holderId = null; held.item.c = facing.c; held.item.r = facing.r; return null; }
+  return 'Interact had no available effect on the tile ahead.';
+}
+
 function isThrowTarget(room, player, c, r) {
   const distance = Math.abs(c - player.gc) + Math.abs(r - player.gr);
   return distance >= 1 && distance <= 3 && (c === player.gc || r === player.gr) && engine.isDropTile(room, c, r);
+}
+
+function macroReference(room, step) {
+  if (typeof step !== 'string') return null;
+  if (step.startsWith('macro:')) return room.macros.find(macro => macro.id === step.slice(6)) || null;
+  return room.macros.find(macro => macro.shortcut === step) || null;
+}
+
+function expandMacro(room, macro, seen = new Set()) {
+  if (!macro || seen.has(macro.id)) return null;
+  const nextSeen = new Set(seen).add(macro.id);
+  const expanded = [];
+  for (const step of macro.sequence) {
+    if (MACRO_BASIC_KEYS.has(step)) { expanded.push(step); continue; }
+    const child = macroReference(room, step);
+    if (!child) return null;
+    const childSteps = expandMacro(room, child, nextSeen);
+    if (!childSteps) return null;
+    expanded.push(...childSteps);
+  }
+  return expanded;
+}
+
+function heldItem(room, player) {
+  const plate = room.plates.find(item => item.holderId === player.id);
+  if (plate) return { kind: 'plate', item: plate };
+  const ingredient = room.ingredients.find(item => item.holderId === player.id);
+  if (ingredient) return { kind: 'ingredient', item: ingredient };
+  const bun = room.buns.find(item => item.holderId === player.id);
+  return bun ? { kind: 'bun', item: bun } : null;
+}
+
+function macroThrowTarget(room, player) {
+  const direction = player.dir?.x || player.dir?.y ? player.dir : { x: 0, y: 1 };
+  let target = null;
+  for (let distance = 1; distance <= 3; distance += 1) {
+    const c = player.gc + direction.x * distance, r = player.gr + direction.y * distance;
+    if (!engine.isDropTile(room, c, r) || (room.stage >= 2 && objectAt(room, c, r))) break;
+    target = { c, r };
+  }
+  return target;
 }
 
 function leaveRoom(player) {
@@ -167,9 +292,30 @@ function handlePlayerMessage(player, message) {
     if (message.type !== 'player-state') engine.record(room, 'command', { playerId: player.id, command: message.type });
     if (message.type === 'notepad-open') {
       const session = agentSessionForPlayer(player);
-      if (session) session.notepadOpen = true;
+      if (session) { session.notepadOpen = true; room.researcherPanel = { kind: 'notes', agentId: player.id, brand: player.name }; }
       console.log(`[${room.id}] ${player.name} opened the handover notepad.`);
-      return;
+      return broadcastRoom(room);
+    }
+    if (message.type === 'notepad-close') {
+      const session = agentSessionForPlayer(player);
+      if (session) {
+        session.notepadOpen = false;
+        if (room.researcherPanel?.kind === 'notes' && room.researcherPanel.agentId === player.id) room.researcherPanel = null;
+      }
+      return broadcastRoom(room);
+    }
+    if (message.type === 'macros-open') {
+      const session = agentSessionForPlayer(player);
+      if (session) { session.macrosOpen = true; room.researcherPanel = { kind: 'macros', agentId: player.id, brand: player.name }; }
+      return broadcastRoom(room);
+    }
+    if (message.type === 'macros-close') {
+      const session = agentSessionForPlayer(player);
+      if (session) {
+        session.macrosOpen = false;
+        if (room.researcherPanel?.kind === 'macros' && room.researcherPanel.agentId === player.id) room.researcherPanel = null;
+      }
+      return broadcastRoom(room);
     }
     if (message.type === 'notepad-save') {
       const text = String(message.text || '').trim().slice(0, 10000);
@@ -181,6 +327,50 @@ function handlePlayerMessage(player, message) {
       if (session) database.saveNotepadRevision(session.experimentId, player, room.stage, room.notepad);
       console.log(`[${room.id}] ${player.name} saved handover notepad revision ${room.notepad.revision}.`);
       return broadcastRoom(room);
+    }
+    if (message.type === 'agent-key') {
+      const failure = runMacroKey(room, player, message.key);
+      if (failure) return reject(player, failure);
+      return broadcastRoom(room);
+    }
+    if (message.type === 'macro-run') {
+      const session = agentSessionForPlayer(player);
+      const shortcut = String(message.shortcut || '').toLowerCase();
+      const macro = room.macros.find(item => item.shortcut === shortcut);
+      if (!session || !macro) return reject(player, 'That macro shortcut is not available.');
+      const sequence = expandMacro(room, macro);
+      if (!sequence) return reject(player, 'This macro has a missing or circular macro reference.');
+      finishMacroRun(player, true);
+      session.macroRunId = database.startMacroRun(session.experimentId, player, room.stage, macro);
+      for (let index = 0; index < sequence.length; index += 1) {
+        const key = sequence[index];
+        const failure = runMacroKey(room, player, key);
+        if (failure) { session.macroFailure = { blockedStep: index + 1 }; return reject(player, failure); }
+      }
+      finishMacroRun(player, false);
+      console.log(`[${room.id}] ${player.name} ran macro ${macro.name} (${macro.shortcut.toUpperCase()}).`);
+      return broadcastRoom(room);
+    }
+    if (message.type === 'macro-create') {
+      const session = agentSessionForPlayer(player);
+      if (!session?.macrosOpen) return reject(player, 'Open the macro panel before creating a macro.');
+      return handlePlayerMessage(player, { type: 'macros-sync', macros: [...room.macros, message.macro] });
+    }
+    if (message.type === 'macro-edit') {
+      const session = agentSessionForPlayer(player);
+      const id = String(message.id || '');
+      const existing = room.macros.find(macro => macro.id === id);
+      if (!session?.macrosOpen) return reject(player, 'Open the macro panel before editing a macro.');
+      if (!existing) return reject(player, 'That macro is not available.');
+      const replacement = { ...existing, ...message.macro, id };
+      return handlePlayerMessage(player, { type: 'macros-sync', macros: room.macros.map(macro => macro.id === id ? replacement : macro) });
+    }
+    if (message.type === 'macro-delete') {
+      const session = agentSessionForPlayer(player);
+      const id = String(message.id || '');
+      if (!session?.macrosOpen) return reject(player, 'Open the macro panel before deleting a macro.');
+      if (!room.macros.some(macro => macro.id === id)) return reject(player, 'That macro is not available.');
+      return handlePlayerMessage(player, { type: 'macros-sync', macros: room.macros.filter(macro => macro.id !== id) });
     }
     if (message.type === 'macro-run-start') {
       const session = agentSessionForPlayer(player);
@@ -199,7 +389,13 @@ function handlePlayerMessage(player, message) {
     if (message.type === 'macro-run-finish') { finishMacroRun(player, false); return; }
     if (message.type === 'player-state') {
       if (!room.activePlayerIds.includes(player.id)) return;
-      if (!engine.move(room, player, message)) return reject(player, 'That movement is blocked.');
+      if (!engine.move(room, player, message)) {
+        const nextDirection = message.dir && Number.isFinite(message.dir.x) && Number.isFinite(message.dir.y) ? { x: message.dir.x, y: message.dir.y } : null;
+        const pivoted = nextDirection && (player.dir?.x !== nextDirection.x || player.dir?.y !== nextDirection.y);
+        if (!pivoted) return reject(player, 'That movement is blocked.');
+        player.dir = nextDirection;
+        engine.record(room, 'pivot', { playerId: player.id, dir: nextDirection });
+      }
       const { gc, gr, dir } = player;
       room.players.forEach(member => {
         if (member !== player) send(member.ws, { type: 'player-state', playerId: player.id, gc, gr, dir, holding: message.holding || null });
@@ -360,8 +556,14 @@ function handlePlayerMessage(player, message) {
     if (message.type === 'macros-sync') {
       if (!Array.isArray(message.macros) || message.macros.length > 20) return;
       const previousMacros = new Map(room.macros.map(macro => [macro.id, macro]));
-      room.macros = message.macros.map(macro => ({ id: String(macro.id || ''), name: String(macro.name || '').slice(0, 40), shortcut: String(macro.shortcut || '').slice(0, 1), sequence: Array.isArray(macro.sequence) ? macro.sequence.slice(0, 40) : [] }));
+      const proposedMacros = message.macros.map(macro => ({ id: String(macro.id || ''), name: String(macro.name || '').slice(0, 40), shortcut: String(macro.shortcut || '').toLowerCase().slice(0, 1), sequence: Array.isArray(macro.sequence) ? macro.sequence.slice(0, 40).map(step => String(step)) : [] }));
       const session = agentSessionForPlayer(player);
+      if (session && !session.macrosOpen) return reject(player, 'Open the macro panel before saving macros.');
+      if (proposedMacros.some(macro => !macro.id || !macro.name || !/^[a-z]$/.test(macro.shortcut) || RESERVED_MACRO_SHORTCUTS.has(macro.shortcut) || !macro.sequence.length)) return reject(player, 'Each macro needs a name, an unused letter shortcut, and a non-empty sequence.');
+      if (new Set(proposedMacros.map(macro => macro.id)).size !== proposedMacros.length || new Set(proposedMacros.map(macro => macro.shortcut)).size !== proposedMacros.length) return reject(player, 'Macro IDs and shortcut letters must be unique.');
+      const candidateRoom = { ...room, macros: proposedMacros };
+      if (proposedMacros.some(macro => !expandMacro(candidateRoom, macro))) return reject(player, 'A macro has an unknown shortcut, missing reference, or circular reference.');
+      room.macros = proposedMacros;
       if (session) {
         database.saveKnowledge(session.experimentId, player.id, 'macros-sync', room.macros);
         const currentIds = new Set(room.macros.map(macro => macro.id));
@@ -422,33 +624,59 @@ function transcriptPaths(experimentId, brand) {
 
 function recordAgentEvent(session, kind, data) {
   const event = { at: new Date().toISOString(), experimentId: session.experimentId, agentId: session.player.id, brand: session.brand, kind, data };
+  const experiment = experiments.get(session.experimentId);
+  if (experiment) {
+    experiment.researchEvents ||= [];
+    experiment.researchEvents.push(event);
+    if (experiment.researchEvents.length > 300) experiment.researchEvents.shift();
+  }
   const paths = transcriptPaths(session.experimentId, session.brand);
   fs.appendFileSync(paths.events, `${JSON.stringify(event)}\n`);
   fs.appendFileSync(paths.agentJsonl, `${JSON.stringify(event)}\n`);
   database.saveAgentEvent(event);
   const summary = kind === 'act'
     ? `${event.at} ACT ${data.action}${data.accepted ? '' : ` rejected: ${data.reason}`}`
-    : `${event.at} OBSERVE stage ${data.observation.stage.id} (${data.observation.status})`;
+    : kind === 'reasoning'
+      ? `${event.at} REACT ${data.summary}`
+      : `${event.at} OBSERVE stage ${data.observation.stage.id} (${data.observation.status})`;
   fs.appendFileSync(paths.agentText, `${summary}\n`);
 }
 
 function agentObservation(session) {
   const { room, player } = session;
   const slot = room.schedule.find(item => item.playerId === player.id);
+  const turnIndex = room.schedule.indexOf(slot);
   const now = Date.now();
   return {
     experimentId: session.experimentId,
     brand: session.brand,
     status: room.status,
-    turn: { active: room.activePlayerIds.includes(player.id), startsAt: slot?.startAt || null, endsAt: slot?.endAt || null, remainingMs: slot ? Math.max(0, slot.endAt - now) : 0 },
+    turn: { number: turnIndex >= 0 ? turnIndex + 1 : null, total: room.schedule.length, active: room.activePlayerIds.includes(player.id), startsAt: slot?.startAt || null, endsAt: slot?.endAt || null, remainingMs: slot ? Math.max(0, slot.endAt - now) : 0 },
     stage: { id: room.stage, name: STAGES[room.stage]?.name || 'Stage', bridgeRow: bridgeRow(room, now) },
-    self: { id: player.id, position: { c: player.gc, r: player.gr }, direction: player.dir || null },
+    self: { id: player.id, position: { c: player.gc, r: player.gr }, direction: player.dir || null, holding: (() => { const held = heldItem(room, player); return !held ? null : held.kind === 'plate' ? { kind: 'plate', contents: held.item.contents.map(plateIngredient) } : { kind: held.kind, item: held.kind === 'bun' ? 'bun' : held.item.item }; })() },
     players: room.players.map(({ id, name, gc, gr }) => ({ id, name, position: { c: gc, r: gr } })),
     map: engine.map(room, now), tickets: room.stage >= 3 ? room.tickets.map(({ needs, displayNeeds, ...ticket }) => ticket) : room.tickets,
     world: { buns: room.buns, ingredients: room.ingredients, plates: room.plates },
     score: room.score, missed: room.missed, customerMessage: room.customerMessage || '',
-    notepad: session.notepadOpen ? room.notepad : { author: room.notepad.author, updatedAt: room.notepad.updatedAt, revision: room.notepad.revision }, macros: room.macros,
-    availableActions: ['move', 'pickupBun', 'dropBun', 'pickupIngredient', 'dropIngredient', 'placeIngredient', 'processIngredient', 'takePlate', 'pickupPlate', 'dropPlate', 'discardPlate', 'addToPlate', 'addFloorItemToPlate', 'addStationItemToPlate', 'removePlateItem', 'serve', 'openNotepad', 'saveNotepad', 'saveMacros', 'startMacroRun', 'macroMoveStep', 'finishMacroRun'],
+    lastActionResult: session.lastActionResult || null,
+    notepad: session.notepadOpen ? room.notepad : { author: room.notepad.author, updatedAt: room.notepad.updatedAt, revision: room.notepad.revision }, macros: session.macrosOpen ? room.macros : room.macros.map(({ id, name, shortcut }) => ({ id, name, shortcut })),
+    panelGuidance: {
+      notepad: session.notepadOpen ? {
+        purpose: 'Read inherited discoveries and write a concise accurate handover for the next LLM.',
+        actions: 'openNotepad reads; saveNotepad replaces the document only with changed text; closeNotepad ends the controlled session but does not erase saved text.',
+        persists: 'The complete saved text, author, and revision persist to the next agent. Physical kitchen state does not.',
+      } : null,
+      macros: session.macrosOpen ? {
+        purpose: 'Inspect, create, edit, delete, and run reusable saved sequences.',
+        naming: 'Use an intent-based name such as "Get plate from spawn." Put coordinate and held-item preconditions in the handover notepad, not the macro name.',
+        createExample: { action: 'createMacro', macro: { id: 'spawn-to-plate', name: 'Get plate from spawn', shortcut: 't', sequence: ['w', 'w', 'e'] } },
+        editExample: { action: 'editMacro', id: 'spawn-to-plate', macro: { name: 'Get plate from spawn', shortcut: 't', sequence: ['w', 'w', 'e'] } },
+        deleteExample: { action: 'deleteMacro', id: 'spawn-to-plate' },
+        sequences: 'Use w, a, s, d, q, e, space, or another saved macro shortcut. Shortcut letters are unique; W/A/S/D/Q/E are reserved. A shortcut inside a sequence calls that saved macro.',
+        runExample: { action: 'runMacro', shortcut: 't' },
+      } : null,
+    },
+    availableActions: ['move', 'interact', 'throw', 'serve', 'openNotepad', 'closeNotepad', 'saveNotepad', 'openMacros', 'closeMacros', 'createMacro', 'editMacro', 'deleteMacro', 'runMacro'],
   };
 }
 
@@ -462,6 +690,9 @@ function toGameMessage(player, action, input = {}) {
       if (!vector) return null;
       return { type: 'player-state', gc: player.gc + vector[0], gr: player.gr + vector[1], dir: { x: vector[0], y: vector[1] } };
     }
+    case 'interact': return { type: 'agent-key', key: 'e' };
+    case 'throw': return { type: 'agent-key', key: 'q' };
+    case 'serve': return { type: 'agent-key', key: ' ' };
     case 'pickupBun': return { ...common, type: 'bun-pick' };
     case 'dropBun': return { ...common, type: 'bun-drop' };
     case 'pickupIngredient': return { ...common, type: 'ingredient-pick' };
@@ -476,10 +707,17 @@ function toGameMessage(player, action, input = {}) {
     case 'addFloorItemToPlate': return { ...common, type: 'plate-add-floor-item' };
     case 'addStationItemToPlate': return { ...common, type: 'plate-add-station-item' };
     case 'removePlateItem': return { ...common, type: 'plate-remove-item' };
-    case 'serve': return { ...common, type: 'serve-order' };
+    case 'serve': return { type: 'agent-key', key: ' ' };
     case 'openNotepad': return { ...common, type: 'notepad-open' };
+    case 'closeNotepad': return { ...common, type: 'notepad-close' };
     case 'saveNotepad': return { ...common, type: 'notepad-save' };
+    case 'openMacros': return { ...common, type: 'macros-open' };
+    case 'closeMacros': return { ...common, type: 'macros-close' };
     case 'saveMacros': return { ...common, type: 'macros-sync' };
+    case 'createMacro': return { ...common, type: 'macro-create' };
+    case 'editMacro': return { ...common, type: 'macro-edit' };
+    case 'deleteMacro': return { ...common, type: 'macro-delete' };
+    case 'runMacro': return { ...common, type: 'macro-run' };
     case 'startMacroRun': return { ...common, type: 'macro-run-start' };
     case 'macroMoveStep': return { ...common, type: 'macro-run-step' };
     case 'finishMacroRun': return { ...common, type: 'macro-run-finish' };
@@ -487,7 +725,7 @@ function toGameMessage(player, action, input = {}) {
   }
 }
 
-function createExperiment(brands) {
+function createExperiment(brands, options = {}) {
   const room = engine.createRoom(makeRoomId());
   const experimentId = `EXP-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
   const directory = path.join(RUNS_DIR, experimentId);
@@ -503,6 +741,11 @@ function createExperiment(brands) {
     return session;
   });
   room.hostId = room.players[0].id;
+  room.turnPlan = options.turnPlan || TURN_PLAN;
+  room.shiftSeconds = options.turnSeconds || SHIFT_SECONDS;
+  room.ticketLifetimeMultiplier = options.ticketLifetimeMultiplier || 1;
+  room.ticketArrivalMinSeconds = options.ticketArrivalMinSeconds || 9;
+  room.ticketArrivalMaxSeconds = options.ticketArrivalMaxSeconds || 15;
   rooms.set(room.id, room);
   experiments.set(experimentId, { experimentId, room, sessions, createdAt: Date.now() });
   database.createExperiment(experimentId, room, sessions);
@@ -520,7 +763,27 @@ app.post('/api/researcher/experiments', requireResearcher, (req, res) => {
   if (!brands.length || brands.length > MAX_PLAYERS || brands.some(brand => !brand) || new Set(brands.map(brand => brand.toLowerCase())).size !== brands.length) {
     return res.status(400).json({ error: 'Provide 1–4 unique agent brands using letters, numbers, spaces, dots, hyphens, or underscores.' });
   }
-  const experiment = createExperiment(brands);
+  const mode = String(req.body?.mode || 'full-study');
+  if (!['full-study', 'stage1-handover-pilot'].includes(mode)) return res.status(400).json({ error: 'mode must be "full-study" or "stage1-handover-pilot".' });
+  if (mode === 'stage1-handover-pilot' && brands.length !== 2) return res.status(400).json({ error: 'The Stage 1 handover pilot requires exactly two agents.' });
+  const requestedSeconds = req.body?.turnSeconds;
+  const turnSeconds = requestedSeconds === undefined ? SHIFT_SECONDS : Number(requestedSeconds);
+  if (!Number.isInteger(turnSeconds) || turnSeconds < 15 || turnSeconds > 3600) return res.status(400).json({ error: 'turnSeconds must be a whole number from 15 to 3600.' });
+  const ticketLifetimeMultiplier = Number(req.body?.ticketLifetimeMultiplier ?? 1);
+  const ticketArrivalMinSeconds = Number(req.body?.ticketArrivalMinSeconds ?? 9);
+  const ticketArrivalMaxSeconds = Number(req.body?.ticketArrivalMaxSeconds ?? 15);
+  if (!Number.isFinite(ticketLifetimeMultiplier) || ticketLifetimeMultiplier < 1 || ticketLifetimeMultiplier > 10 || !Number.isFinite(ticketArrivalMinSeconds) || !Number.isFinite(ticketArrivalMaxSeconds) || ticketArrivalMinSeconds < 1 || ticketArrivalMaxSeconds < ticketArrivalMinSeconds || ticketArrivalMaxSeconds > 120) return res.status(400).json({ error: 'Invalid ticket pacing configuration.' });
+  const experiment = createExperiment(brands, { turnPlan: mode === 'stage1-handover-pilot' ? STAGE_ONE_HANDOVER_PLAN : TURN_PLAN, turnSeconds, ticketLifetimeMultiplier, ticketArrivalMinSeconds, ticketArrivalMaxSeconds });
+  const configurations = Array.isArray(req.body?.agentConfigurations) ? req.body.agentConfigurations : [];
+  configurations.forEach(configuration => {
+    const session = experiment.sessions.find(item => item.brand === safeBrand(configuration?.brand));
+    if (!session) return;
+    const provider = String(configuration.provider || 'unknown').trim().slice(0, 40) || 'unknown';
+    const model = String(configuration.model || 'unknown').trim().slice(0, 100) || 'unknown';
+    const temperature = Number.isFinite(Number(configuration.temperature)) ? Number(configuration.temperature) : null;
+    const promptVersion = String(configuration.promptVersion || 'runner-v1').trim().slice(0, 100) || 'runner-v1';
+    database.saveAgentConfiguration(experiment.experimentId, session.player, { provider, model, temperature, promptVersion });
+  });
   return res.status(201).json({ experimentId: experiment.experimentId, roomId: experiment.room.id, agents: experiment.sessions.map(session => ({ brand: session.brand, token: session.token })) });
 });
 
@@ -535,21 +798,38 @@ app.get('/api/agent/observe', (req, res) => {
 app.post('/api/agent/act', (req, res) => {
   const session = agentForRequest(req, res);
   if (!session) return;
-  const action = String(req.body?.action || '');
-  const message = toGameMessage(session.player, action, req.body || {});
-  if (!message) {
-    recordAgentEvent(session, 'act', { action, input: req.body || {}, accepted: false, reason: 'Unknown action.' });
-    return res.status(400).json({ error: 'Unknown action.' });
+  const request = { ...(req.body || {}) };
+  const reasoningSummary = String(request.reasoningSummary || '').trim().slice(0, 1000);
+  const actions = Array.isArray(request.actions) ? request.actions : [request];
+  if (!actions.length || actions.length > 8 || actions.some(action => !action || typeof action !== 'object')) return res.status(400).json({ error: 'Provide one to eight action objects.' });
+  if (reasoningSummary) recordAgentEvent(session, 'reasoning', { summary: reasoningSummary });
+  const steps = [];
+  for (let index = 0; index < actions.length; index += 1) {
+    const input = { ...actions[index] };
+    const action = String(input.action || '');
+    delete input.reasoningSummary;
+    const message = toGameMessage(session.player, action, input);
+    if (!message) { steps.push({ step: index + 1, action, outcome: 'rejected', reason: 'Unknown action.' }); break; }
+    if (!session.room.activePlayerIds.includes(session.player.id) && !['openNotepad', 'closeNotepad', 'openMacros', 'closeMacros'].includes(action)) { steps.push({ step: index + 1, action, outcome: 'waiting', reason: 'This agent is not in an active turn.' }); break; }
+    const digest = () => JSON.stringify({ p: { gc: session.player.gc, gr: session.player.gr, dir: session.player.dir }, buns: session.room.buns, ingredients: session.room.ingredients, plates: session.room.plates, tickets: session.room.tickets, score: session.room.score, missed: session.room.missed, notepad: session.room.notepad, macros: session.room.macros, panel: session.room.researcherPanel });
+    const before = digest();
+    session.lastRejection = null;
+    session.macroFailure = null;
+    session.lastActionDetails = null;
+    handlePlayerMessage(session.player, message);
+    const reason = session.lastRejection || null;
+    const after = digest();
+    const outcome = reason ? (action === 'runMacro' ? 'blocked' : 'rejected') : (before === after ? 'no_effect' : 'succeeded');
+    const macroFailure = action === 'runMacro' && outcome === 'blocked' ? { blockedStep: session.macroFailure?.blockedStep || null } : {};
+    steps.push({ step: index + 1, action, outcome, ...(reason ? { reason } : {}), ...macroFailure });
+    if (outcome !== 'succeeded') break;
   }
-  if (!session.room.activePlayerIds.includes(session.player.id) && !['openNotepad'].includes(action)) {
-    recordAgentEvent(session, 'act', { action, input: req.body || {}, accepted: false, reason: 'This agent is not in an active turn.' });
-    return res.status(409).json({ error: 'This agent is not in an active turn.' });
-  }
-  handlePlayerMessage(session.player, message);
+  const finalStep = steps.at(-1);
+  session.lastActionResult = { action: actions.length === 1 ? finalStep.action : 'plan', outcome: finalStep.outcome, ...(finalStep.reason ? { reason: finalStep.reason } : {}), ...(finalStep.blockedStep ? { blockedStep: finalStep.blockedStep } : {}), ...(session.lastActionDetails || {}), executedSteps: steps.length, plannedSteps: actions.length };
   const observation = agentObservation(session);
   database.saveRoom(session.experimentId, session.room);
-  recordAgentEvent(session, 'act', { action, input: req.body || {}, accepted: true, observation });
-  return res.json({ accepted: true, observation });
+  recordAgentEvent(session, 'act', { action: actions.length === 1 ? finalStep.action : 'plan', input: { actions }, accepted: finalStep.outcome === 'succeeded', reason: finalStep.reason || null, steps, observation });
+  return res.status(finalStep.outcome === 'succeeded' ? 200 : 409).json({ accepted: finalStep.outcome === 'succeeded', steps, observation });
 });
 
 app.get('/api/researcher/experiments', requireResearcher, (req, res) => {
@@ -560,7 +840,26 @@ app.get('/api/researcher/experiments/:experimentId', requireResearcher, (req, re
   const experiment = experiments.get(req.params.experimentId);
   if (!experiment) return res.status(404).json({ error: 'Experiment not found.' });
   const { room, sessions, experimentId, createdAt } = experiment;
-  return res.json({ experimentId, roomId: room.id, createdAt, status: room.status, stage: room.stage, score: room.score, missed: room.missed, players: room.players.map(({ id, name, gc, gr }) => ({ id, name, position: { c: gc, r: gr } })), map: engine.map(room), notepad: room.notepad, macros: room.macros, tickets: room.tickets, world: { buns: room.buns, ingredients: room.ingredients, plates: room.plates }, events: room.eventLog.slice(-100), transcripts: { eventsJsonl: path.relative(__dirname, transcriptPaths(experimentId, sessions[0].brand).events) } });
+  const activeSlotIndex = room.schedule.findIndex(slot => room.activePlayerIds.includes(slot.playerId));
+  const activeSlot = room.schedule[activeSlotIndex] || null;
+  const activePlayer = room.players.find(player => player.id === activeSlot?.playerId) || null;
+  const researchEvents = experiment.researchEvents || [];
+  const savedActions = researchEvents.flatMap(event => {
+    if (event.kind !== 'act') return [];
+    if (event.data.action === 'saveNotepad' || event.data.action === 'saveMacros') return [{ event, input: event.data.input }];
+    return (event.data.input?.actions || []).filter(action => action.action === 'saveNotepad' || action.action === 'saveMacros').map(input => ({ event, input }));
+  });
+  const panelEvents = {
+    notes: savedActions.filter(({ input }) => input.action === 'saveNotepad').map(({ event, input }) => ({ at: event.at, brand: event.brand, text: input.text })),
+    macros: savedActions.filter(({ input }) => input.action === 'saveMacros').map(({ event, input }) => ({ at: event.at, brand: event.brand, macros: input.macros })),
+    react: researchEvents.filter(event => event.kind === 'reasoning').map(event => ({ at: event.at, brand: event.brand, summary: event.data.summary })),
+  };
+  const holding = activePlayer ? heldItem(room, activePlayer) : null;
+  const heldSummary = !holding ? null : holding.kind === 'plate'
+    ? { kind: 'plate', contents: holding.item.contents.map(plateIngredient) }
+    : { kind: holding.kind, item: holding.kind === 'ingredient' ? plateIngredient(holding.item) : { item: 'bun' } };
+  const events = room.eventLog.slice(-100).map(event => ({ ...event, playerName: room.players.find(player => player.id === event.playerId)?.name || null }));
+  return res.json({ experimentId, roomId: room.id, createdAt, status: room.status, stage: room.stage, score: room.score, missed: room.missed, customerMessage: room.customerMessage || '', turn: activeSlot ? { number: activeSlotIndex + 1, agent: activePlayer?.name || 'Agent', endsAt: activeSlot.endAt, remainingMs: Math.max(0, activeSlot.endAt - Date.now()) } : null, players: activePlayer ? [{ id: activePlayer.id, name: activePlayer.name, position: { c: activePlayer.gc, r: activePlayer.gr } }] : [], activeHolding: heldSummary, map: engine.map(room), notes: room.notepad.text ? [room.notepad] : [], notepad: room.notepad, macros: room.macros, tickets: room.stage >= 3 ? room.tickets.map(({ needs, displayNeeds, ...ticket }) => ticket) : room.tickets, world: { buns: room.buns, ingredients: room.ingredients, plates: room.plates }, researcherPanel: room.researcherPanel, research: panelEvents, events, transcripts: { eventsJsonl: path.relative(__dirname, transcriptPaths(experimentId, sessions[0].brand).events) } });
 });
 
 wss.on('connection', ws => {
@@ -574,7 +873,8 @@ function broadcastEvent(room, message) { room.players.forEach(player => send(pla
 
 function loadStage(room, stageId, now = Date.now()) {
   engine.resetStage(room, stageId, now);
-  [...agentTokens.values()].filter(session => session.room === room).forEach(session => { session.notepadOpen = false; });
+  room.researcherPanel = null;
+  [...agentTokens.values()].filter(session => session.room === room).forEach(session => { session.notepadOpen = false; session.macrosOpen = false; });
   const experiment = experimentForRoom(room);
   if (experiment) database.saveRoom(experiment.experimentId, room);
   console.log(`[${room.id}] loaded ${STAGES[stageId].name}.`);
@@ -584,12 +884,14 @@ function updateTickets(room, now) {
   if (!room.nextTicketAt) room.nextTicketAt = now + 5000;
   if (now >= room.nextTicketAt && room.tickets.length < 4) {
     const recipe = engine.nextRecipe(room);
-    const ticket = { ...recipe, id: `${now}-${Math.random()}`, expiresAt: now + recipe.time * 1000 };
+    const ticket = { ...recipe, id: `${now}-${Math.random()}`, expiresAt: now + recipe.time * (room.ticketLifetimeMultiplier || 1) * 1000 };
     room.tickets.push(ticket);
     const experiment = experimentForRoom(room);
     const player = room.players.find(member => room.activePlayerIds.includes(member.id));
     if (experiment && player) database.saveTicketEvent(experiment.experimentId, player, room.stage, ticket, 'issued', null, now);
-    room.nextTicketAt = now + (9 + Math.random() * 6) * 1000;
+    const minimum = room.ticketArrivalMinSeconds || 9;
+    const maximum = room.ticketArrivalMaxSeconds || 15;
+    room.nextTicketAt = now + (minimum + Math.random() * (maximum - minimum)) * 1000;
   }
   const remaining = room.tickets.filter(ticket => ticket.expiresAt <= now);
   if (remaining.length) {
@@ -623,7 +925,8 @@ function advanceRoom(room) {
       broadcastEvent(room, { type: 'handover-warning', playerId: player.id, playerName: player.name, startsAt: slot.startAt });
     }
     if (player && !slot.entered && now >= slot.startAt && now < slot.endAt) {
-      if (room.stage !== slot.stageId) loadStage(room, slot.stageId, now);
+      // Every scheduled turn starts from a fresh physical kitchen. Handover knowledge lives separately in room.notepad and room.macros.
+      loadStage(room, slot.stageId, now);
       engine.admit(room, player);
       slot.entered = true; room.activePlayerIds.push(player.id);
       const experiment = experimentForRoom(room);
@@ -650,11 +953,10 @@ function advanceRoom(room) {
 function startSession(room, host) {
   if (room.status !== 'waiting') return;
   room.status = 'active'; room.startedAt = Date.now(); room.activePlayerIds = [];
-  room.schedule = TURN_PLAN.filter(turn => room.players[turn.playerIndex]).map((turn, index) => {
-    const startAt = room.startedAt + index * SHIFT_SECONDS * 1000;
-    return { playerId: room.players[turn.playerIndex].id, stageId: turn.stageId, startAt, endAt: startAt + SHIFT_SECONDS * 1000, warned: index === 0, entered: false, ended: false };
+  room.schedule = (room.turnPlan || TURN_PLAN).filter(turn => room.players[turn.playerIndex]).map((turn, index) => {
+    const startAt = room.startedAt + index * room.shiftSeconds * 1000;
+    return { playerId: room.players[turn.playerIndex].id, stageId: turn.stageId, startAt, endAt: startAt + room.shiftSeconds * 1000, warned: index === 0, entered: false, ended: false };
   });
-  loadStage(room, room.schedule[0].stageId, room.startedAt);
   console.log(`[${room.id}] session started by ${host.name}; ${room.players[0].name} is first.`);
   advanceRoom(room);
   // Short ticks keep preparation completion close to the visible 1.5s arc.

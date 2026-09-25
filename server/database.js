@@ -84,6 +84,23 @@ if (!migrationTwo) {
   db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(2, new Date().toISOString());
 }
 
+const migrationThree = db.prepare('SELECT 1 FROM schema_migrations WHERE version = 3').get();
+if (!migrationThree) {
+  db.exec(`
+    CREATE TABLE agent_configurations (
+      experiment_id TEXT NOT NULL REFERENCES experiments(experiment_id),
+      agent_id INTEGER NOT NULL,
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      temperature REAL,
+      prompt_version TEXT NOT NULL,
+      configured_at TEXT NOT NULL,
+      PRIMARY KEY (experiment_id, agent_id)
+    );
+  `);
+  db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(3, new Date().toISOString());
+}
+
 const statements = {
   insertExperiment: db.prepare('INSERT INTO experiments (experiment_id, room_id, environment, created_at, status, stage, score, missed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
   insertAgent: db.prepare('INSERT INTO agents (experiment_id, agent_id, brand) VALUES (?, ?, ?)'),
@@ -101,6 +118,7 @@ const statements = {
   insertMacroRevision: db.prepare('INSERT INTO macro_revisions (experiment_id, turn_id, agent_id, stage, macro_id, macro_name, shortcut, sequence_json, event_kind, finalised_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
   insertMacroRun: db.prepare('INSERT INTO macro_runs (experiment_id, turn_id, agent_id, stage, macro_id, macro_name, shortcut, used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
   finishMacroRun: db.prepare('UPDATE macro_runs SET ended_at = ?, blocked = ? WHERE id = ?'),
+  upsertAgentConfiguration: db.prepare('INSERT OR REPLACE INTO agent_configurations (experiment_id, agent_id, provider, model, temperature, prompt_version, configured_at) VALUES (?, ?, ?, ?, ?, ?, ?)'),
 };
 
 function iso(ms = Date.now()) { return new Date(ms).toISOString(); }
@@ -149,5 +167,8 @@ function startMacroRun(experiment, player, stage, macro, at = Date.now()) {
 }
 
 function finishMacroRun(id, blocked, at = Date.now()) { statements.finishMacroRun.run(iso(at), blocked ? 1 : 0, id); }
+function saveAgentConfiguration(experiment, player, configuration) {
+  statements.upsertAgentConfiguration.run(experiment, player.id, configuration.provider, configuration.model, configuration.temperature, configuration.promptVersion, iso());
+}
 
-module.exports = { environment, filePath, createExperiment, saveTurns, saveRoom, saveTurnStatus, activateTurn, endTurn, saveFirstSuccessfulServe, saveAgentEvent, saveKnowledge, saveTicketEvent, saveNotepadRevision, saveMacroRevision, startMacroRun, finishMacroRun };
+module.exports = { environment, filePath, createExperiment, saveTurns, saveRoom, saveTurnStatus, activateTurn, endTurn, saveFirstSuccessfulServe, saveAgentEvent, saveKnowledge, saveTicketEvent, saveNotepadRevision, saveMacroRevision, startMacroRun, finishMacroRun, saveAgentConfiguration };
