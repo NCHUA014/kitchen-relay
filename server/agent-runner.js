@@ -8,6 +8,7 @@ const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 const baseUrl = String(config.baseUrl || 'http://localhost:3000').replace(/\/$/, '');
 const researcherToken = process.env[config.researcherTokenEnv || 'RESEARCHER_TOKEN'] || 'local-researcher-token';
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const MAX_BURST_ACTIONS = 12;
 
 function assert(condition, message) { if (!condition) throw new Error(message); }
 async function requestJson(url, options = {}) {
@@ -23,7 +24,7 @@ function parseModelReply(text) {
   const end = source.lastIndexOf('}');
   if (start < 0 || end <= start) throw new Error('Model response did not contain a JSON object.');
   const reply = JSON.parse(source.slice(start, end + 1));
-  assert(reply && typeof reply === 'object' && Array.isArray(reply.actions) && reply.actions.length >= 1 && reply.actions.length <= 8, 'Model response needs an actions array with one to eight actions.');
+  assert(reply && typeof reply === 'object' && Array.isArray(reply.actions) && reply.actions.length >= 1 && reply.actions.length <= MAX_BURST_ACTIONS, `Model response needs an actions array with one to ${MAX_BURST_ACTIONS} actions.`);
   assert(reply.actions.every(action => action && typeof action.action === 'string'), 'Each action needs an action name.');
   return { reasoningSummary: String(reply.reasoning_summary || '').trim().slice(0, 1000), actions: reply.actions.map(normalizeAction) };
 }
@@ -55,20 +56,31 @@ function responseText(response) {
     .join('');
 }
 function agentInstructions() {
-  return `You are a Kitchen Relay research participant. You receive only a server-approved observation and can take declared actions. You have no browser, source-code, database, shell, WebSocket, or other tools. Do not invent game state.
+  return `You are a Kitchen Relay research participant.
 
-Core game instructions:
-- Controls: move = W/A/S/D, interact = E, throw = Q, serve = Space. Use move, interact, throw, and serve; they apply to the tile directly ahead and what you hold.
-- Items and plates belong only on clear floor tiles, never counters or bridges. Walking over an item does not pick it up: stand adjacent, face it, then interact.
-- Interact picks up, places, prepares, or loads items according to your held item and the adjacent tile. A plate can carry multiple ingredients. Throw intentionally drops what you hold; a loaded plate ejects only its newest ingredient. Serve only a completed held plate while facing the serving window.
-- Goal: serve plates that exactly match visible tickets before expiry. After a serve attempt, inspect customerMessage for feedback.
-- Cultural handover is the primary research objective; serving tickets provides score and evidence. Early in every turn, open both Notes and Macros to inspect inherited knowledge. Use turn.remainingMs to balance play and handover. The relevant detailed guidance appears in the observation while a panel is open.
-- Note: leave accurate discoveries, cautions, and useful macro guidance for the next LLM. Notes and macros persist; the physical kitchen resets each turn.
+You are one member of a team of agents. The whole relay—not one agent alone—is evaluated. Your most important responsibility is to leave useful, accurate cultural handover for future agents through Notes and Macros. Score and missed tickets are useful evidence of learning, but are less important than the team’s accumulated knowledge.
+
+You receive only the approved game observation and may use only the declared actions. You do not have access to a browser, page source, DevTools, database, shell, WebSocket, or any other tools. Do not invent state that is not visible in your observation.
+
+Controls and interaction:
+- Move: W, A, S, D. Interact: E. Throw/drop: Q. Serve: Space.
+- These actions affect the tile directly in front of you. To collect a floor item or use a station, stand beside it, face it, then interact. Walking over an item does not collect it.
+- A plate can hold several ingredients. Q drops an item; when holding a loaded plate, Q releases only its newest ingredient. Serve only while holding a completed plate and facing the serving window. Read customerMessage after a serve attempt.
+- Items and plates belong only on clear floor tiles, never counters or bridges.
+
+Your team responsibility:
+- Early in every turn, inspect Notes and Macros once. If you are first in the relay, empty Notes and Macros are expected: discover useful facts, then leave them for the next agent.
+- workingKnowledge remembers panels already reviewed during this turn. Do not reopen an unchanged panel hoping for new information.
+- handoverProgress shows your current contribution. Before turn end, make substantive contributions to both Notes and Macros when useful. Do not write empty notes or create ceremonial macros just to increase a count.
+- Use Notes for discoveries, cautions, station locations, and macro preconditions. Every created, edited, or retired macro must have a matching comprehensive Note for the next agent: its shortcut, exact sequence, location/start and held-item preconditions, intended result, and any known failure or regression condition. Use Macros for genuinely reusable local action sequences. Macro names must identify the real action and a visible landmark relationship; never call an ordinary location "spawn." Detailed macro instructions appear only when you open Macros.
+- Gameplay performance is evaluated as 55% keystroke efficiency and 45% completed-ticket score. Each manual W/A/S/D/Q/E/Space action costs one declared keystroke. Running a saved macro costs one declared keystroke even if it performs many saved steps. Prefer verified reusable macros over repeatedly issuing the same manual sequence, while still completing tickets accurately. Investigate and document a macro when an environmental change breaks it.
+- Notes and Macros persist to the next agent; the physical kitchen resets each turn. queue.position is your one-based position in the relay.
+- If preShiftBriefing.active is true, this is protected reading time before your gameplay timer begins. Read the inherited Notes and Macros, then return only readyForShift with a concise briefing summary. Do not attempt gameplay actions.
 
 Return exactly one JSON object, with no Markdown:
 {"reasoning_summary":"A concise, research-facing statement of what you observed and why this short plan is useful. Do not provide private chain-of-thought.","actions":[{"action":"one name from availableActions", "...required fields..."}]}
 
-Plan one to eight actions. The server executes them in order and stops at the first blocked, rejected, no-effect, or waiting step. Then you receive the updated observation and lastActionResult. Use short plans only when the steps are safe from the current observation. Decide yourself whether a successful useful sequence should later be saved as a macro; it is never saved automatically. For movement, use exactly {"action":"move","direction":"up"}, "down", "left", or "right". Do not send coordinate vectors. Use only an action name listed in the observation.`;
+Use burst ReAct: give one concise research-facing reasoning_summary for the whole burst, not a thought for every key. Plan one to twelve actions. A local controller executes movement keys quickly, one at a time, and returns a fresh observation after an interaction, failed action, serve, macro activity, ticket change, or bridge movement. Use longer bursts only for safe movement. Decide yourself whether a useful sequence should become a macro; it is never saved automatically. For movement, use exactly {"action":"move","direction":"up"}, "down", "left", or "right". Do not send coordinate vectors. Use only an action name listed in the observation.`;
 }
 async function callOpenAI(agent, observation) {
   const key = process.env[agent.apiKeyEnv];
@@ -94,12 +106,59 @@ async function act(token, actions, reasoningSummary) {
     body: JSON.stringify({ actions, reasoningSummary }),
   });
 }
+function ticketSignature(observation) {
+  return (observation.tickets || []).map(ticket => `${ticket.id}:${ticket.expiresAt || ''}`).join('|');
+}
+function actionNeedsFreshDecision(action) {
+  return action.action !== 'move';
+}
+async function executeBurst(token, decision, startingObservation) {
+  const steps = [];
+  const displayed = [];
+  const initialBridgeRow = startingObservation.stage?.bridgeRow ?? null;
+  const initialTickets = ticketSignature(startingObservation);
+  let observation = startingObservation;
+  let interruption = null;
+  const stepDelayMs = Number(config.controllerStepMs || 100);
+
+  for (let index = 0; index < decision.actions.length; index += 1) {
+    const action = decision.actions[index];
+    // Submit one key at a time. The server remains authoritative and can reject
+    // a key after its own game tick changes the bridge or other world state.
+    const result = await act(token, [action], index === 0 ? decision.reasoningSummary : '');
+    const step = result.steps?.at(-1) || { action: action.action, outcome: result.accepted ? 'succeeded' : 'stopped' };
+    steps.push(step);
+    displayed.push(actionDisplay(action));
+    observation = result.observation || observation;
+
+    if (step.outcome !== 'succeeded') { interruption = step.outcome; break; }
+    if (!observation.turn?.active) { interruption = 'turn ended'; break; }
+    if ((observation.stage?.bridgeRow ?? null) !== initialBridgeRow) { interruption = 'bridge moved'; break; }
+    if (ticketSignature(observation) !== initialTickets) { interruption = 'tickets changed'; break; }
+    if (actionNeedsFreshDecision(action)) { interruption = 'meaningful action completed'; break; }
+    if (index < decision.actions.length - 1) await delay(stepDelayMs);
+  }
+  return { steps, displayed, interruption };
+}
 async function runTurn(agent, token) {
   let actions = 0;
   for (;;) {
     const observation = await observe(token);
-    if (observation.status === 'finished' || (actions > 0 && !observation.turn.active)) return;
-    if (!observation.turn.active) { await delay(config.pollMs || 500); continue; }
+    if (observation.status === 'finished') return;
+    if (actions > 0 && !observation.turn.active) actions = 0;
+    if (!observation.turn.active) {
+      if (observation.preShiftBriefing?.active && !observation.preShiftBriefing.ready) {
+        await act(token, [{ action: 'openNotepad' }]);
+        await act(token, [{ action: 'openMacros' }]);
+        const briefingObservation = await observe(token);
+        try {
+          const briefing = await askModel(agent, briefingObservation);
+          await act(token, [{ action: 'readyForShift' }], briefing.reasoningSummary);
+          console.log(`${agent.brand}: handover briefing complete; waiting for shift start.`);
+        } catch (error) { console.error(`${agent.brand}: handover briefing failed (${error.message}); retrying.`); }
+      }
+      await delay(config.pollMs || 500); continue;
+    }
     if (actions >= config.maxActionsPerTurn) {
       console.log(`${agent.brand}: action limit reached; waiting for turn end.`);
       do { await delay(config.pollMs || 500); } while ((await observe(token)).turn.active);
@@ -108,17 +167,19 @@ async function runTurn(agent, token) {
     let decision;
     try { decision = await askModel(agent, observation); }
     catch (error) { console.error(`${agent.brand}: model response rejected (${error.message}); retrying.`); await delay(config.pollMs || 500); continue; }
-    const result = await act(token, decision.actions, decision.reasoningSummary);
-    actions += result.steps?.length || decision.actions.length;
-    const displays = decision.actions.slice(0, result.steps?.length || decision.actions.length).map(actionDisplay).join(' → ');
-    const final = result.steps?.at(-1);
+    const result = await executeBurst(token, decision, observation);
+    actions += result.steps.length;
+    const displays = result.displayed.join(' → ');
+    const final = result.steps.at(-1);
     const detail = final?.reason ? `: ${final.reason}` : '';
-    console.log(`${agent.brand}: ${displays}${result.accepted ? '' : ` (${final?.outcome || 'stopped'}${detail})`}`);
-    await delay(config.actionDelayMs || 150);
+    const stopped = result.interruption && result.interruption !== 'meaningful action completed' ? ` (${result.interruption}${detail})` : '';
+    console.log(`${agent.brand}: ${displays}${stopped}`);
   }
 }
 async function main() {
-  assert(Array.isArray(config.agents) && config.agents.length === 2, 'The Stage 1 handover pilot requires exactly two configured agents.');
+  const mode = config.mode || 'stages-1-2-study';
+  const requiredAgents = mode === 'stage1-handover-pilot' ? 2 : 1;
+  assert(Array.isArray(config.agents) && config.agents.length === requiredAgents, `${mode} requires exactly ${requiredAgents} configured agent(s).`);
   config.agents.forEach(agent => {
     assert(typeof agent.brand === 'string' && agent.brand, 'Each agent needs a brand.');
     assert(typeof agent.provider === 'string' && agent.provider, `${agent.brand} needs a provider.`);
@@ -128,14 +189,14 @@ async function main() {
   });
   const created = await requestJson(`${baseUrl}/api/researcher/experiments`, {
     method: 'POST', headers: { 'x-researcher-token': researcherToken, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agents: config.agents.map(agent => agent.brand), agentConfigurations: config.agents.map(({ brand, provider, model, temperature, promptVersion }) => ({ brand, provider, model, temperature, promptVersion })), mode: 'stage1-handover-pilot', turnSeconds: config.turnSeconds || 180, ticketLifetimeMultiplier: config.ticketLifetimeMultiplier || 3, ticketArrivalMinSeconds: config.ticketArrivalMinSeconds || 25, ticketArrivalMaxSeconds: config.ticketArrivalMaxSeconds || 40 }),
+    body: JSON.stringify({ agents: config.agents.map(agent => agent.brand), agentConfigurations: config.agents.map(({ brand, provider, model, temperature, promptVersion }) => ({ brand, provider, model, temperature, promptVersion })), mode, turnSeconds: config.turnSeconds || 180, briefingSeconds: config.briefingSeconds ?? 20, ticketLifetimeMultiplier: config.ticketLifetimeMultiplier || 3, ticketArrivalMinSeconds: config.ticketArrivalMinSeconds || 25, ticketArrivalMaxSeconds: config.ticketArrivalMaxSeconds || 40 }),
   });
   console.log(`Experiment ${created.experimentId} created in room ${created.roomId}.`);
-  console.log('Stage 1 agent A starts now; agent B receives a fresh Stage 1 kitchen but inherits the saved notepad and macros.');
-  for (const agent of config.agents) {
+  console.log('Waiting for the researcher to click Observe in researcher.html before the relay begins.');
+  await Promise.all(config.agents.map(agent => {
     const session = created.agents.find(item => item.brand === agent.brand);
-    await runTurn(agent, session.token);
-  }
-  console.log(`Pilot complete. Read server/runs/${created.experimentId}/events.jsonl and the two per-agent transcripts.`);
+    return runTurn(agent, session.token);
+  }));
+  console.log(`Study complete. Read server/runs/${created.experimentId}/events.jsonl and the per-agent transcripts.`);
 }
 main().catch(error => { console.error(`Runner failed: ${error.message}`); process.exitCode = 1; });

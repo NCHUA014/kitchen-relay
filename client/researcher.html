@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="styles.css">
   <style>
     html, body { display: block; overflow: auto; }
-    .observer { width: min(1120px, calc(100vw - 32px)); margin: 24px auto; padding: 22px; background: var(--panel); border: 1px solid var(--counter-top); border-radius: 8px; color: var(--ink); }
+    .observer { width: min(1480px, calc(100vw - 32px)); margin: 24px auto; padding: 22px; background: var(--panel); border: 1px solid var(--counter-top); border-radius: 8px; color: var(--ink); }
     .observer h1 { margin: 0; color: var(--accent); font-size: 23px; letter-spacing: 2px; }
     .observer-intro { margin: 8px 0 16px; color: var(--ink-dim); font-size: 12px; }
     .observer-controls, .observer-tools { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
@@ -23,9 +23,13 @@
     .observer-ticket { min-width: 150px; padding: 9px; background: #f2e6d5; color: #2a1f18; border-radius: 4px; box-shadow: 0 3px 0 #b8a687; font-size: 11px; }
     .observer-ticket strong { display: block; margin-bottom: 5px; }
     .observer-ticket small { color: #795d42; }
-    #observer-map { display: grid; grid-template-columns: repeat(17, 40px); gap: 1px; width: max-content; max-width: 100%; overflow: auto; padding: 7px; background: #4d3828; border-radius: 6px; }
-    .observer-cell { width: 40px; height: 40px; display: grid; place-items: center; background: #e7d1ad; font-size: 22px; }
+    #observer-map { display: grid; grid-template-columns: repeat(17, 54px); gap: 2px; width: max-content; max-width: 100%; overflow: auto; padding: 9px; background: #4d3828; border-radius: 8px; }
+    .observer-cell { width: 54px; height: 54px; position: relative; display: grid; place-items: center; background: #e7d1ad; font-size: 29px; }
     .observer-cell.counter { background: #8c6c52; } .observer-cell.abyss { background: #171b2c; } .observer-cell.bridge { background: #b68b42; }
+    .observer-player { font-size: 33px; filter: drop-shadow(0 1px 0 #000); } .observer-held { position: absolute; right: 1px; bottom: 1px; font-size: 15px; letter-spacing: -4px; }
+    .observer-floor-plate { font-size: 22px; letter-spacing: -5px; }
+    #observer-last-action { width: max-content; min-width: 500px; max-width: 100%; margin: 10px 0 18px; padding: 10px 14px; background: #f5ead3; border: 2px solid #c5aa82; border-radius: 6px; color: #2a1f18; font-size: 16px; font-weight: bold; }
+    #observer-last-action strong { color: #795d42; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; margin-right: 8px; }
     #observer-events { max-height: 180px; overflow: auto; white-space: pre-wrap; background: #261d16; color: #f6e8cc; padding: 12px; border-radius: 6px; font-size: 11px; }
     #research-panel, #agent-panel-mirror { margin: 12px 0; padding: 14px; background: #f5ead3; color: #2a1f18; border: 2px solid var(--accent); border-radius: 6px; }
     #agent-panel-mirror { border-color: #7fb069; }
@@ -58,6 +62,7 @@
       <section id="observer-tickets" aria-label="Current tickets"></section>
       <h2>Live kitchen map</h2>
       <div id="observer-map" aria-label="Read-only kitchen map"></div>
+      <div id="observer-last-action" aria-live="polite"><strong>Last key</strong> Waiting for an agent action.</div>
       <h2>Recent server events</h2>
       <pre id="observer-events"></pre>
     </section>

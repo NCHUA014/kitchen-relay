@@ -25,6 +25,10 @@ const STAGE_ONE_HANDOVER_PLAN = Object.freeze([
   { playerIndex: 0, stageId: 1 },
   { playerIndex: 1, stageId: 1 },
 ]);
+const STAGES_ONE_AND_TWO_PLAN = Object.freeze([
+  { playerIndex: 0, stageId: 1 },
+  { playerIndex: 0, stageId: 2 },
+]);
 const MACRO_BASIC_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', ' ']);
 const RESERVED_MACRO_SHORTCUTS = new Set(['w', 'a', 's', 'd', 'q', 'e']);
 let nextPlayerId = 1;
@@ -210,6 +214,24 @@ function expandMacro(room, macro, seen = new Set()) {
   return expanded;
 }
 
+function macroValidationError(room, macro, chain = []) {
+  if (!macro) return 'The macro definition is missing.';
+  if (chain.includes(macro.id)) {
+    const loop = [...chain.slice(chain.indexOf(macro.id)), macro.id].join(' → ');
+    return `Circular macro reference: ${loop}. A macro cannot call itself, directly or indirectly.`;
+  }
+  const nextChain = [...chain, macro.id];
+  for (let index = 0; index < macro.sequence.length; index += 1) {
+    const step = macro.sequence[index];
+    if (MACRO_BASIC_KEYS.has(step)) continue;
+    const child = macroReference(room, step);
+    if (!child) return `Macro "${macro.name}" sequence step ${index + 1} uses "${step}", but it is not a basic key or an existing macro shortcut.`;
+    const error = macroValidationError(room, child, nextChain);
+    if (error) return error;
+  }
+  return null;
+}
+
 function heldItem(room, player) {
   const plate = room.plates.find(item => item.holderId === player.id);
   if (plate) return { kind: 'plate', item: plate };
@@ -292,7 +314,7 @@ function handlePlayerMessage(player, message) {
     if (message.type !== 'player-state') engine.record(room, 'command', { playerId: player.id, command: message.type });
     if (message.type === 'notepad-open') {
       const session = agentSessionForPlayer(player);
-      if (session) { session.notepadOpen = true; room.researcherPanel = { kind: 'notes', agentId: player.id, brand: player.name }; }
+      if (session) { session.notepadOpen = true; session.notepadReviewed = true; room.researcherPanel = { kind: 'notes', agentId: player.id, brand: player.name }; }
       console.log(`[${room.id}] ${player.name} opened the handover notepad.`);
       return broadcastRoom(room);
     }
@@ -306,7 +328,7 @@ function handlePlayerMessage(player, message) {
     }
     if (message.type === 'macros-open') {
       const session = agentSessionForPlayer(player);
-      if (session) { session.macrosOpen = true; room.researcherPanel = { kind: 'macros', agentId: player.id, brand: player.name }; }
+      if (session) { session.macrosOpen = true; session.macrosReviewed = true; room.researcherPanel = { kind: 'macros', agentId: player.id, brand: player.name }; }
       return broadcastRoom(room);
     }
     if (message.type === 'macros-close') {
@@ -317,12 +339,27 @@ function handlePlayerMessage(player, message) {
       }
       return broadcastRoom(room);
     }
+    if (message.type === 'agent-briefing-ready') {
+      const session = agentSessionForPlayer(player);
+      const slot = room.schedule.find(turn => turn.playerId === player.id && turn.briefing && !turn.entered && !turn.ended);
+      if (!session || !slot) return reject(player, 'You are not the agent currently receiving a handover briefing.');
+      session.preShiftBriefing = { readyAt: Date.now() };
+      loadStage(room, slot.stageId);
+      engine.admit(room, player);
+      slot.briefing = false; slot.entered = true; slot.startAt = Date.now(); slot.endAt = slot.startAt + room.shiftSeconds * 1000;
+      room.activePlayerIds = [player.id];
+      const experiment = experimentForRoom(room);
+      if (experiment) { database.activateTurn(experiment.experimentId, slot, room); database.saveRoom(experiment.experimentId, room); }
+      console.log(`[${room.id}] ${player.name} completed briefing and entered the kitchen.`);
+      return broadcastRoom(room);
+    }
     if (message.type === 'notepad-save') {
       const text = String(message.text || '').trim().slice(0, 10000);
       const session = agentSessionForPlayer(player);
       if (session && !session.notepadOpen) return reject(player, 'Open the handover notepad before saving it.');
       if (text === room.notepad.text) return reject(player, 'Nothing changed in the notepad.');
       room.notepad = { text, author: player.name, updatedAt: Date.now(), revision: room.notepad.revision + 1 };
+      if (session) session.handover.noteSaves += 1;
       if (session) database.saveKnowledge(session.experimentId, player.id, 'notepad-save', room.notepad);
       if (session) database.saveNotepadRevision(session.experimentId, player, room.stage, room.notepad);
       console.log(`[${room.id}] ${player.name} saved handover notepad revision ${room.notepad.revision}.`);
@@ -544,7 +581,7 @@ function handlePlayerMessage(player, message) {
       if (chicken && chicken.cookedSides < 1) { if (experiment) database.saveTicketEvent(experiment.experimentId, player, room.stage, ticket, 'failed_serve', 'chicken_not_grilled'); room.customerMessage = 'Chicken still smells, yuck!'; return broadcastRoom(room); }
       if (room.stage >= 2 && tomato && !tomato.chopped) { if (experiment) database.saveTicketEvent(experiment.experimentId, player, room.stage, ticket, 'failed_serve', 'tomato_not_chopped'); room.customerMessage = "Tomato still looks round. Can't fit that in a burger, can ya?"; return broadcastRoom(room); }
       if (room.stage >= 2 && greens && !greens.chopped) { if (experiment) database.saveTicketEvent(experiment.experimentId, player, room.stage, ticket, 'failed_serve', room.stage === 5 ? 'pickle_not_chopped' : 'lettuce_not_chopped'); room.customerMessage = room.stage === 5 ? 'Pickle slices are still too large to fit into a burger.' : 'Lettuce is still too large to fit into a burger.'; return broadcastRoom(room); }
-      room.tickets.splice(index, 1); room.score += ticket.points;
+      room.tickets.splice(index, 1); room.score += ticket.points; room.completedTickets += 1;
       room.plates.splice(room.plates.indexOf(plate), 1);
       room.customerMessage = ':) Perfect — thank you!';
       if (experiment) { database.saveTicketEvent(experiment.experimentId, player, room.stage, ticket, 'served'); database.saveFirstSuccessfulServe(experiment.experimentId, player, room.stage); }
@@ -560,11 +597,18 @@ function handlePlayerMessage(player, message) {
       const session = agentSessionForPlayer(player);
       if (session && !session.macrosOpen) return reject(player, 'Open the macro panel before saving macros.');
       if (proposedMacros.some(macro => !macro.id || !macro.name || !/^[a-z]$/.test(macro.shortcut) || RESERVED_MACRO_SHORTCUTS.has(macro.shortcut) || !macro.sequence.length)) return reject(player, 'Each macro needs a name, an unused letter shortcut, and a non-empty sequence.');
+      if (proposedMacros.some(macro => /\bspawn\b/i.test(`${macro.id} ${macro.name}`))) return reject(player, 'Do not call a location "spawn". Name the actual action and a visible landmark relationship instead.');
       if (new Set(proposedMacros.map(macro => macro.id)).size !== proposedMacros.length || new Set(proposedMacros.map(macro => macro.shortcut)).size !== proposedMacros.length) return reject(player, 'Macro IDs and shortcut letters must be unique.');
       const candidateRoom = { ...room, macros: proposedMacros };
-      if (proposedMacros.some(macro => !expandMacro(candidateRoom, macro))) return reject(player, 'A macro has an unknown shortcut, missing reference, or circular reference.');
+      const invalidMacro = proposedMacros.map(macro => macroValidationError(candidateRoom, macro)).find(Boolean);
+      if (invalidMacro) return reject(player, invalidMacro);
       room.macros = proposedMacros;
       if (session) {
+        const changedMacros = room.macros.filter(macro => {
+          const previous = previousMacros.get(macro.id);
+          return !previous || JSON.stringify(previous) !== JSON.stringify(macro);
+        }).length + [...previousMacros.keys()].filter(id => !room.macros.some(macro => macro.id === id)).length;
+        session.handover.macroChanges += changedMacros;
         database.saveKnowledge(session.experimentId, player.id, 'macros-sync', room.macros);
         const currentIds = new Set(room.macros.map(macro => macro.id));
         room.macros.forEach(macro => {
@@ -638,45 +682,89 @@ function recordAgentEvent(session, kind, data) {
     ? `${event.at} ACT ${data.action}${data.accepted ? '' : ` rejected: ${data.reason}`}`
     : kind === 'reasoning'
       ? `${event.at} REACT ${data.summary}`
-      : `${event.at} OBSERVE stage ${data.observation.stage.id} (${data.observation.status})`;
+      : `${event.at} OBSERVE ${data.observation.stage ? `stage ${data.observation.stage.id}` : 'lobby'} (${data.observation.status})`;
   fs.appendFileSync(paths.agentText, `${summary}\n`);
 }
 
 function agentObservation(session) {
   const { room, player } = session;
-  const slot = room.schedule.find(item => item.playerId === player.id);
+  const slot = room.schedule.find(item => item.playerId === player.id && !item.ended) || room.schedule.filter(item => item.playerId === player.id).at(-1);
   const turnIndex = room.schedule.indexOf(slot);
   const now = Date.now();
+  const active = room.activePlayerIds.includes(player.id);
+  const briefing = Boolean(slot?.briefing && !slot?.entered && !slot?.ended);
+  const canReadKnowledge = active || briefing;
   return {
     experimentId: session.experimentId,
     brand: session.brand,
     status: room.status,
-    turn: { number: turnIndex >= 0 ? turnIndex + 1 : null, total: room.schedule.length, active: room.activePlayerIds.includes(player.id), startsAt: slot?.startAt || null, endsAt: slot?.endAt || null, remainingMs: slot ? Math.max(0, slot.endAt - now) : 0 },
-    stage: { id: room.stage, name: STAGES[room.stage]?.name || 'Stage', bridgeRow: bridgeRow(room, now) },
-    self: { id: player.id, position: { c: player.gc, r: player.gr }, direction: player.dir || null, holding: (() => { const held = heldItem(room, player); return !held ? null : held.kind === 'plate' ? { kind: 'plate', contents: held.item.contents.map(plateIngredient) } : { kind: held.kind, item: held.kind === 'bun' ? 'bun' : held.item.item }; })() },
-    players: room.players.map(({ id, name, gc, gr }) => ({ id, name, position: { c: gc, r: gr } })),
-    map: engine.map(room, now), tickets: room.stage >= 3 ? room.tickets.map(({ needs, displayNeeds, ...ticket }) => ticket) : room.tickets,
-    world: { buns: room.buns, ingredients: room.ingredients, plates: room.plates },
-    score: room.score, missed: room.missed, customerMessage: room.customerMessage || '',
+    turn: { number: turnIndex >= 0 ? turnIndex + 1 : null, total: room.schedule.length, active, startsAt: slot?.startAt || null, endsAt: slot?.endAt || null, remainingMs: active && slot?.endAt ? Math.max(0, slot.endAt - now) : 0 },
+    queue: { position: turnIndex >= 0 ? turnIndex + 1 : null, total: room.schedule.length, isFirst: turnIndex === 0 },
+    stage: active ? { id: room.stage, name: STAGES[room.stage]?.name || 'Stage', bridgeRow: bridgeRow(room, now) } : null,
+    self: active ? { id: player.id, position: { c: player.gc, r: player.gr }, direction: player.dir || null, holding: (() => { const held = heldItem(room, player); return !held ? null : held.kind === 'plate' ? { kind: 'plate', contents: held.item.contents.map(plateIngredient) } : { kind: held.kind, item: held.kind === 'bun' ? 'bun' : held.item.item }; })() } : null,
+    knowledgeReview: { notepadReviewed: Boolean(session.notepadReviewed), macrosReviewed: Boolean(session.macrosReviewed), notepadOpen: Boolean(session.notepadOpen), macrosOpen: Boolean(session.macrosOpen) },
+    handoverProgress: {
+      primaryEvaluation: 'The entire relay is evaluated as one team. Cultural handover matters more than score or missed tickets.',
+      minimum: { substantiveNotepadRevisions: 1, substantiveMacroContributions: 1 },
+      completed: session.handover || { noteSaves: 0, macroChanges: 0 },
+      instruction: 'Before turn end, contribute substantial accurate Notes and Macros that future agents can use. Do not inflate counts with empty notes or ceremonial macros.',
+    },
+    keystrokeEfficiency: {
+      manual: session.keystrokes?.manual || 0,
+      macros: session.keystrokes?.macros || 0,
+      total: (session.keystrokes?.manual || 0) + (session.keystrokes?.macros || 0),
+      instruction: 'Manual W/A/S/D/Q/E/Space actions each count as one keystroke. A runMacro shortcut counts as one keystroke regardless of its saved sequence length.',
+    },
+    // Models are deliberately stateless between API calls. Once a panel has been
+    // reviewed, retain its current contents in this turn-scoped working memory so
+    // an agent does not have to reopen an unchanged panel merely to remember it.
+    workingKnowledge: {
+      notepad: canReadKnowledge && session.notepadReviewed ? room.notepad : null,
+      macros: canReadKnowledge && session.macrosReviewed ? room.macros : null,
+    },
+    players: active ? room.players.map(({ id, name, gc, gr }) => ({ id, name, position: { c: gc, r: gr } })) : [],
+    map: active ? engine.map(room, now) : null, tickets: active ? (room.stage >= 3 ? room.tickets.map(({ needs, displayNeeds, ...ticket }) => ticket) : room.tickets) : [],
+    world: active ? { buns: room.buns, ingredients: room.ingredients, plates: room.plates } : null,
+    score: active ? room.score : null, completedTickets: active ? room.completedTickets : null, missed: active ? room.missed : null, customerMessage: active ? room.customerMessage || '' : '',
     lastActionResult: session.lastActionResult || null,
-    notepad: session.notepadOpen ? room.notepad : { author: room.notepad.author, updatedAt: room.notepad.updatedAt, revision: room.notepad.revision }, macros: session.macrosOpen ? room.macros : room.macros.map(({ id, name, shortcut }) => ({ id, name, shortcut })),
+    notepad: session.notepadOpen && canReadKnowledge ? room.notepad : { unavailableUntilBriefing: !canReadKnowledge, revision: canReadKnowledge ? room.notepad.revision : null }, macros: session.macrosOpen && canReadKnowledge ? room.macros : [],
     panelGuidance: {
       notepad: session.notepadOpen ? {
-        purpose: 'Read inherited discoveries and write a concise accurate handover for the next LLM.',
+        purpose: 'Read inherited discoveries and write a concise accurate handover for the next LLM. For every macro created, edited, or retired, document its shortcut, exact sequence, location/start and held-item preconditions, intended result, and known failure or regression condition.',
         actions: 'openNotepad reads; saveNotepad replaces the document only with changed text; closeNotepad ends the controlled session but does not erase saved text.',
         persists: 'The complete saved text, author, and revision persist to the next agent. Physical kitchen state does not.',
       } : null,
       macros: session.macrosOpen ? {
         purpose: 'Inspect, create, edit, delete, and run reusable saved sequences.',
-        naming: 'Use an intent-based name such as "Get plate from spawn." Put coordinate and held-item preconditions in the handover notepad, not the macro name.',
-        createExample: { action: 'createMacro', macro: { id: 'spawn-to-plate', name: 'Get plate from spawn', shortcut: 't', sequence: ['w', 'w', 'e'] } },
-        editExample: { action: 'editMacro', id: 'spawn-to-plate', macro: { name: 'Get plate from spawn', shortcut: 't', sequence: ['w', 'w', 'e'] } },
-        deleteExample: { action: 'deleteMacro', id: 'spawn-to-plate' },
+        naming: 'Name the exact action and an observable landmark relationship, for example "Get lettuce from directly in front of plate station." Never use "spawn": it is not a map landmark and falsely implies a starting location. Put the exact starting coordinate and held-item preconditions in the handover notepad.',
+        workflow: 'To make one: choose a unique id, a location-specific intent name, one unused letter shortcut, and a sequence. Send createMacro. Once it succeeds, that shortcut is immediately available to runMacro and may also appear inside a later macro sequence.',
+        createExample: { action: 'createMacro', macro: { id: 'get-lettuce-by-plate-station', name: 'Get lettuce from directly in front of plate station', shortcut: 't', sequence: ['w', 'w', 'e'] } },
+        editExample: { action: 'editMacro', id: 'get-lettuce-by-plate-station', macro: { name: 'Get lettuce from directly in front of plate station', shortcut: 't', sequence: ['w', 'w', 'e'] } },
+        deleteExample: { action: 'deleteMacro', id: 'get-lettuce-by-plate-station' },
         sequences: 'Use w, a, s, d, q, e, space, or another saved macro shortcut. Shortcut letters are unique; W/A/S/D/Q/E are reserved. A shortcut inside a sequence calls that saved macro.',
         runExample: { action: 'runMacro', shortcut: 't' },
       } : null,
     },
-    availableActions: ['move', 'interact', 'throw', 'serve', 'openNotepad', 'closeNotepad', 'saveNotepad', 'openMacros', 'closeMacros', 'createMacro', 'editMacro', 'deleteMacro', 'runMacro'],
+    preShiftBriefing: {
+      active: briefing,
+      ready: Boolean(session.preShiftBriefing?.readyAt),
+      startsAt: slot?.startAt || null,
+      instruction: 'This is a read-only handover briefing. Open Notes and Macros, absorb the inherited knowledge, then return readyForShift. Do not attempt gameplay actions yet.',
+    },
+    availableActions: active
+      ? [
+        'move', 'interact', 'throw', 'serve', 'runMacro',
+        ...(session.notepadOpen ? ['saveNotepad', 'closeNotepad'] : ['openNotepad']),
+        ...(session.macrosOpen ? ['createMacro', 'editMacro', 'deleteMacro', 'closeMacros'] : ['openMacros']),
+      ]
+      : briefing ? [
+        ...(session.notepadOpen ? ['closeNotepad'] : ['openNotepad']),
+        ...(session.macrosOpen ? ['closeMacros'] : ['openMacros']),
+        'readyForShift',
+      ] : [
+        ...(session.notepadOpen ? ['closeNotepad'] : ['openNotepad']),
+        ...(session.macrosOpen ? ['closeMacros'] : ['openMacros']),
+      ],
   };
 }
 
@@ -713,6 +801,7 @@ function toGameMessage(player, action, input = {}) {
     case 'saveNotepad': return { ...common, type: 'notepad-save' };
     case 'openMacros': return { ...common, type: 'macros-open' };
     case 'closeMacros': return { ...common, type: 'macros-close' };
+    case 'readyForShift': return { ...common, type: 'agent-briefing-ready' };
     case 'saveMacros': return { ...common, type: 'macros-sync' };
     case 'createMacro': return { ...common, type: 'macro-create' };
     case 'editMacro': return { ...common, type: 'macro-edit' };
@@ -734,7 +823,7 @@ function createExperiment(brands, options = {}) {
     const player = { id: nextPlayerId++, name: brand, room, agent: true, ws: null };
     room.players.push(player);
     const token = crypto.randomBytes(32).toString('hex');
-    const session = { experimentId, brand, token, room, player };
+    const session = { experimentId, brand, token, room, player, handover: { noteSaves: 0, macroChanges: 0 }, keystrokes: { manual: 0, macros: 0 }, preShiftBriefing: null };
     agentTokens.set(token, session);
     const paths = transcriptPaths(experimentId, brand);
     fs.writeFileSync(paths.agentText, `Kitchen Relay transcript — ${brand}\nExperiment: ${experimentId}\n\n`);
@@ -743,6 +832,7 @@ function createExperiment(brands, options = {}) {
   room.hostId = room.players[0].id;
   room.turnPlan = options.turnPlan || TURN_PLAN;
   room.shiftSeconds = options.turnSeconds || SHIFT_SECONDS;
+  room.briefingSeconds = options.briefingSeconds || 0;
   room.ticketLifetimeMultiplier = options.ticketLifetimeMultiplier || 1;
   room.ticketArrivalMinSeconds = options.ticketArrivalMinSeconds || 9;
   room.ticketArrivalMaxSeconds = options.ticketArrivalMaxSeconds || 15;
@@ -751,7 +841,6 @@ function createExperiment(brands, options = {}) {
   database.createExperiment(experimentId, room, sessions);
   console.log(`[${room.id}] experiment ${experimentId} created.`);
   brands.forEach(brand => console.log(`[${room.id}] ${brand} joined the kitchen!`));
-  startSession(room, room.players[0]);
   database.saveTurns(experimentId, room.schedule);
   database.saveRoom(experimentId, room);
   return { experimentId, room, sessions };
@@ -764,16 +853,19 @@ app.post('/api/researcher/experiments', requireResearcher, (req, res) => {
     return res.status(400).json({ error: 'Provide 1–4 unique agent brands using letters, numbers, spaces, dots, hyphens, or underscores.' });
   }
   const mode = String(req.body?.mode || 'full-study');
-  if (!['full-study', 'stage1-handover-pilot'].includes(mode)) return res.status(400).json({ error: 'mode must be "full-study" or "stage1-handover-pilot".' });
+  if (!['full-study', 'stage1-handover-pilot', 'stages-1-2-study'].includes(mode)) return res.status(400).json({ error: 'mode must be "full-study", "stage1-handover-pilot", or "stages-1-2-study".' });
   if (mode === 'stage1-handover-pilot' && brands.length !== 2) return res.status(400).json({ error: 'The Stage 1 handover pilot requires exactly two agents.' });
+  if (mode === 'stages-1-2-study' && brands.length !== 1) return res.status(400).json({ error: 'The Stages 1–2 study requires exactly one configured Agent 1.' });
   const requestedSeconds = req.body?.turnSeconds;
   const turnSeconds = requestedSeconds === undefined ? SHIFT_SECONDS : Number(requestedSeconds);
   if (!Number.isInteger(turnSeconds) || turnSeconds < 15 || turnSeconds > 3600) return res.status(400).json({ error: 'turnSeconds must be a whole number from 15 to 3600.' });
   const ticketLifetimeMultiplier = Number(req.body?.ticketLifetimeMultiplier ?? 1);
   const ticketArrivalMinSeconds = Number(req.body?.ticketArrivalMinSeconds ?? 9);
   const ticketArrivalMaxSeconds = Number(req.body?.ticketArrivalMaxSeconds ?? 15);
-  if (!Number.isFinite(ticketLifetimeMultiplier) || ticketLifetimeMultiplier < 1 || ticketLifetimeMultiplier > 10 || !Number.isFinite(ticketArrivalMinSeconds) || !Number.isFinite(ticketArrivalMaxSeconds) || ticketArrivalMinSeconds < 1 || ticketArrivalMaxSeconds < ticketArrivalMinSeconds || ticketArrivalMaxSeconds > 120) return res.status(400).json({ error: 'Invalid ticket pacing configuration.' });
-  const experiment = createExperiment(brands, { turnPlan: mode === 'stage1-handover-pilot' ? STAGE_ONE_HANDOVER_PLAN : TURN_PLAN, turnSeconds, ticketLifetimeMultiplier, ticketArrivalMinSeconds, ticketArrivalMaxSeconds });
+  const briefingSeconds = Number(req.body?.briefingSeconds ?? 0);
+  if (!Number.isFinite(ticketLifetimeMultiplier) || ticketLifetimeMultiplier < 1 || ticketLifetimeMultiplier > 10 || !Number.isFinite(ticketArrivalMinSeconds) || !Number.isFinite(ticketArrivalMaxSeconds) || ticketArrivalMinSeconds < 1 || ticketArrivalMaxSeconds < ticketArrivalMinSeconds || ticketArrivalMaxSeconds > 120 || !Number.isInteger(briefingSeconds) || briefingSeconds < 0 || briefingSeconds > 120) return res.status(400).json({ error: 'Invalid ticket pacing or briefing configuration.' });
+  const turnPlan = mode === 'stage1-handover-pilot' ? STAGE_ONE_HANDOVER_PLAN : mode === 'stages-1-2-study' ? STAGES_ONE_AND_TWO_PLAN : TURN_PLAN;
+  const experiment = createExperiment(brands, { turnPlan, turnSeconds, ticketLifetimeMultiplier, ticketArrivalMinSeconds, ticketArrivalMaxSeconds, briefingSeconds });
   const configurations = Array.isArray(req.body?.agentConfigurations) ? req.body.agentConfigurations : [];
   configurations.forEach(configuration => {
     const session = experiment.sessions.find(item => item.brand === safeBrand(configuration?.brand));
@@ -801,7 +893,7 @@ app.post('/api/agent/act', (req, res) => {
   const request = { ...(req.body || {}) };
   const reasoningSummary = String(request.reasoningSummary || '').trim().slice(0, 1000);
   const actions = Array.isArray(request.actions) ? request.actions : [request];
-  if (!actions.length || actions.length > 8 || actions.some(action => !action || typeof action !== 'object')) return res.status(400).json({ error: 'Provide one to eight action objects.' });
+  if (!actions.length || actions.length > 12 || actions.some(action => !action || typeof action !== 'object')) return res.status(400).json({ error: 'Provide one to twelve action objects.' });
   if (reasoningSummary) recordAgentEvent(session, 'reasoning', { summary: reasoningSummary });
   const steps = [];
   for (let index = 0; index < actions.length; index += 1) {
@@ -810,8 +902,10 @@ app.post('/api/agent/act', (req, res) => {
     delete input.reasoningSummary;
     const message = toGameMessage(session.player, action, input);
     if (!message) { steps.push({ step: index + 1, action, outcome: 'rejected', reason: 'Unknown action.' }); break; }
-    if (!session.room.activePlayerIds.includes(session.player.id) && !['openNotepad', 'closeNotepad', 'openMacros', 'closeMacros'].includes(action)) { steps.push({ step: index + 1, action, outcome: 'waiting', reason: 'This agent is not in an active turn.' }); break; }
-    const digest = () => JSON.stringify({ p: { gc: session.player.gc, gr: session.player.gr, dir: session.player.dir }, buns: session.room.buns, ingredients: session.room.ingredients, plates: session.room.plates, tickets: session.room.tickets, score: session.room.score, missed: session.room.missed, notepad: session.room.notepad, macros: session.room.macros, panel: session.room.researcherPanel });
+    if (!session.room.activePlayerIds.includes(session.player.id) && !['openNotepad', 'closeNotepad', 'openMacros', 'closeMacros', 'readyForShift'].includes(action)) { steps.push({ step: index + 1, action, outcome: 'waiting', reason: 'This agent is not in an active turn.' }); break; }
+    if (['move', 'interact', 'throw', 'serve'].includes(action)) session.keystrokes.manual += 1;
+    if (action === 'runMacro') session.keystrokes.macros += 1;
+    const digest = () => JSON.stringify({ p: { gc: session.player.gc, gr: session.player.gr, dir: session.player.dir }, buns: session.room.buns, ingredients: session.room.ingredients, plates: session.room.plates, tickets: session.room.tickets, score: session.room.score, missed: session.room.missed, notepad: session.room.notepad, macros: session.room.macros, panel: session.room.researcherPanel, briefing: session.preShiftBriefing });
     const before = digest();
     session.lastRejection = null;
     session.macroFailure = null;
@@ -819,7 +913,8 @@ app.post('/api/agent/act', (req, res) => {
     handlePlayerMessage(session.player, message);
     const reason = session.lastRejection || null;
     const after = digest();
-    const outcome = reason ? (action === 'runMacro' ? 'blocked' : 'rejected') : (before === after ? 'no_effect' : 'succeeded');
+    const legallyBlockedMove = action === 'move' && /movement is blocked/i.test(reason || '');
+    const outcome = reason ? ((action === 'runMacro' || legallyBlockedMove) ? 'blocked' : 'rejected') : (before === after ? 'no_effect' : 'succeeded');
     const macroFailure = action === 'runMacro' && outcome === 'blocked' ? { blockedStep: session.macroFailure?.blockedStep || null } : {};
     steps.push({ step: index + 1, action, outcome, ...(reason ? { reason } : {}), ...macroFailure });
     if (outcome !== 'succeeded') break;
@@ -836,6 +931,18 @@ app.get('/api/researcher/experiments', requireResearcher, (req, res) => {
   return res.json({ experiments: [...experiments.values()].map(({ experimentId, room, createdAt }) => ({ experimentId, roomId: room.id, status: room.status, stage: room.stage, score: room.score, missed: room.missed, createdAt })) });
 });
 
+app.post('/api/researcher/experiments/:experimentId/start', requireResearcher, (req, res) => {
+  const experiment = experiments.get(req.params.experimentId);
+  if (!experiment) return res.status(404).json({ error: 'Experiment not found.' });
+  if (experiment.room.status === 'waiting') {
+    startSession(experiment.room, experiment.room.players[0]);
+    database.saveTurns(experiment.experimentId, experiment.room.schedule);
+    database.saveRoom(experiment.experimentId, experiment.room);
+    console.log(`[${experiment.room.id}] researcher started experiment ${experiment.experimentId}.`);
+  }
+  return res.json({ experimentId: experiment.experimentId, status: experiment.room.status });
+});
+
 app.get('/api/researcher/experiments/:experimentId', requireResearcher, (req, res) => {
   const experiment = experiments.get(req.params.experimentId);
   if (!experiment) return res.status(404).json({ error: 'Experiment not found.' });
@@ -844,6 +951,10 @@ app.get('/api/researcher/experiments/:experimentId', requireResearcher, (req, re
   const activeSlot = room.schedule[activeSlotIndex] || null;
   const activePlayer = room.players.find(player => player.id === activeSlot?.playerId) || null;
   const researchEvents = experiment.researchEvents || [];
+  const latestActionEvent = [...researchEvents].reverse().find(event => event.kind === 'act') || null;
+  const latestAction = latestActionEvent
+    ? { at: latestActionEvent.at, brand: latestActionEvent.brand, action: (latestActionEvent.data.input?.actions || [])[0] || null, step: latestActionEvent.data.steps?.at(-1) || null }
+    : null;
   const savedActions = researchEvents.flatMap(event => {
     if (event.kind !== 'act') return [];
     if (event.data.action === 'saveNotepad' || event.data.action === 'saveMacros') return [{ event, input: event.data.input }];
@@ -855,11 +966,13 @@ app.get('/api/researcher/experiments/:experimentId', requireResearcher, (req, re
     react: researchEvents.filter(event => event.kind === 'reasoning').map(event => ({ at: event.at, brand: event.brand, summary: event.data.summary })),
   };
   const holding = activePlayer ? heldItem(room, activePlayer) : null;
+  const activeSession = activePlayer ? sessions.find(session => session.player.id === activePlayer.id) : null;
+  const keystrokes = activeSession?.keystrokes || { manual: 0, macros: 0 };
   const heldSummary = !holding ? null : holding.kind === 'plate'
     ? { kind: 'plate', contents: holding.item.contents.map(plateIngredient) }
     : { kind: holding.kind, item: holding.kind === 'ingredient' ? plateIngredient(holding.item) : { item: 'bun' } };
   const events = room.eventLog.slice(-100).map(event => ({ ...event, playerName: room.players.find(player => player.id === event.playerId)?.name || null }));
-  return res.json({ experimentId, roomId: room.id, createdAt, status: room.status, stage: room.stage, score: room.score, missed: room.missed, customerMessage: room.customerMessage || '', turn: activeSlot ? { number: activeSlotIndex + 1, agent: activePlayer?.name || 'Agent', endsAt: activeSlot.endAt, remainingMs: Math.max(0, activeSlot.endAt - Date.now()) } : null, players: activePlayer ? [{ id: activePlayer.id, name: activePlayer.name, position: { c: activePlayer.gc, r: activePlayer.gr } }] : [], activeHolding: heldSummary, map: engine.map(room), notes: room.notepad.text ? [room.notepad] : [], notepad: room.notepad, macros: room.macros, tickets: room.stage >= 3 ? room.tickets.map(({ needs, displayNeeds, ...ticket }) => ticket) : room.tickets, world: { buns: room.buns, ingredients: room.ingredients, plates: room.plates }, researcherPanel: room.researcherPanel, research: panelEvents, events, transcripts: { eventsJsonl: path.relative(__dirname, transcriptPaths(experimentId, sessions[0].brand).events) } });
+  return res.json({ experimentId, roomId: room.id, createdAt, status: room.status, stage: room.stage, score: room.score, completedTickets: room.completedTickets, missed: room.missed, customerMessage: room.customerMessage || '', turn: activeSlot ? { number: activeSlotIndex + 1, agent: activePlayer?.name || 'Agent', endsAt: activeSlot.endAt, remainingMs: Math.max(0, activeSlot.endAt - Date.now()) } : null, players: activePlayer ? [{ id: activePlayer.id, name: activePlayer.name, position: { c: activePlayer.gc, r: activePlayer.gr } }] : [], activeHolding: heldSummary, keystrokes: { manual: keystrokes.manual, macros: keystrokes.macros, total: keystrokes.manual + keystrokes.macros }, lastAgentAction: latestAction, map: engine.map(room), notes: room.notepad.text ? [room.notepad] : [], notepad: room.notepad, macros: room.macros, tickets: room.stage >= 3 ? room.tickets.map(({ needs, displayNeeds, ...ticket }) => ticket) : room.tickets, world: { buns: room.buns, ingredients: room.ingredients, plates: room.plates }, researcherPanel: room.researcherPanel, research: panelEvents, events, transcripts: { eventsJsonl: path.relative(__dirname, transcriptPaths(experimentId, sessions[0].brand).events) } });
 });
 
 wss.on('connection', ws => {
@@ -873,8 +986,20 @@ function broadcastEvent(room, message) { room.players.forEach(player => send(pla
 
 function loadStage(room, stageId, now = Date.now()) {
   engine.resetStage(room, stageId, now);
+  room.lastBridgeRow = null;
   room.researcherPanel = null;
-  [...agentTokens.values()].filter(session => session.room === room).forEach(session => { session.notepadOpen = false; session.macrosOpen = false; });
+  [...agentTokens.values()].filter(session => session.room === room).forEach(session => {
+    const completedBriefing = Boolean(session.preShiftBriefing?.readyAt);
+    session.notepadOpen = false; session.macrosOpen = false;
+    // The next agent's briefing is its turn-scoped working memory. Preserve it
+    // when the fresh physical kitchen is loaded; clear stale prior-turn reviews.
+    if (!completedBriefing) {
+      session.notepadReviewed = false; session.macrosReviewed = false;
+      session.preShiftBriefing = null;
+    }
+    session.handover = { noteSaves: 0, macroChanges: 0 };
+    session.keystrokes = { manual: 0, macros: 0 };
+  });
   const experiment = experimentForRoom(room);
   if (experiment) database.saveRoom(experiment.experimentId, room);
   console.log(`[${room.id}] loaded ${STAGES[stageId].name}.`);
@@ -913,8 +1038,21 @@ function updateIngredientTimers(room, now) {
     ingredient.processing = null; ingredient.processStartedAt = null; ingredient.processEndsAt = null;
   });
 }
+function carryBridgePassengers(room, now) {
+  const nextRow = bridgeRow(room, now);
+  const previousRow = room.lastBridgeRow;
+  room.lastBridgeRow = nextRow;
+  if (nextRow === null || previousRow === null || nextRow === previousRow) return;
+  room.players
+    .filter(player => room.activePlayerIds.includes(player.id) && player.gc === 8 && player.gr === previousRow)
+    .forEach(player => {
+      player.gr = nextRow;
+      engine.record(room, 'bridge-carried', { playerId: player.id, fromRow: previousRow, toRow: nextRow });
+    });
+}
 function advanceRoom(room) {
   const now = Date.now();
+  carryBridgePassengers(room, now);
   updateIngredientTimers(room, now);
   updateTickets(room, now);
   room.schedule.forEach(slot => {
@@ -924,7 +1062,21 @@ function advanceRoom(room) {
       console.log(`[${room.id}] warning: ${player.name} enters in one minute.`);
       broadcastEvent(room, { type: 'handover-warning', playerId: player.id, playerName: player.name, startsAt: slot.startAt });
     }
-    if (player && !slot.entered && now >= slot.startAt && now < slot.endAt) {
+    if (player && slot.entered && !slot.ended && now >= slot.endAt) {
+      slot.ended = true; room.activePlayerIds = room.activePlayerIds.filter(id => id !== slot.playerId);
+      const experiment = experimentForRoom(room);
+      if (experiment) { database.endTurn(experiment.experimentId, slot, room); database.saveRoom(experiment.experimentId, room); }
+      if (player) send(player.ws, { type: 'shift-ended' });
+      const next = room.schedule.find(candidate => !candidate.entered && !candidate.ended);
+      if (next) {
+        next.briefing = true;
+        console.log(`[${room.id}] ${room.players.find(member => member.id === next.playerId)?.name || 'Next agent'} may now read the handover briefing.`);
+      }
+      broadcastRoom(room);
+    }
+    /* Legacy schedule admission is intentionally disabled: an agent begins only
+       after it explicitly completes its protected handover briefing. */
+    if (false && player && !slot.entered && now >= slot.startAt && now < slot.endAt) {
       // Every scheduled turn starts from a fresh physical kitchen. Handover knowledge lives separately in room.notepad and room.macros.
       loadStage(room, slot.stageId, now);
       engine.admit(room, player);
@@ -934,7 +1086,7 @@ function advanceRoom(room) {
       console.log(`[${room.id}] ${player.name} entered the kitchen.`);
       send(player.ws, { type: 'enter-game', roomId: room.id }); broadcastRoom(room);
     }
-    if (!slot.ended && now >= slot.endAt) {
+    if (false && !slot.ended && now >= slot.endAt) {
       slot.ended = true; room.activePlayerIds = room.activePlayerIds.filter(id => id !== slot.playerId);
       const experiment = experimentForRoom(room);
       if (experiment) { database.endTurn(experiment.experimentId, slot, room); database.saveRoom(experiment.experimentId, room); }
@@ -954,8 +1106,7 @@ function startSession(room, host) {
   if (room.status !== 'waiting') return;
   room.status = 'active'; room.startedAt = Date.now(); room.activePlayerIds = [];
   room.schedule = (room.turnPlan || TURN_PLAN).filter(turn => room.players[turn.playerIndex]).map((turn, index) => {
-    const startAt = room.startedAt + index * room.shiftSeconds * 1000;
-    return { playerId: room.players[turn.playerIndex].id, stageId: turn.stageId, startAt, endAt: startAt + room.shiftSeconds * 1000, warned: index === 0, entered: false, ended: false };
+    return { playerId: room.players[turn.playerIndex].id, stageId: turn.stageId, startAt: null, endAt: null, warned: true, briefing: index === 0, entered: false, ended: false };
   });
   console.log(`[${room.id}] session started by ${host.name}; ${room.players[0].name} is first.`);
   advanceRoom(room);

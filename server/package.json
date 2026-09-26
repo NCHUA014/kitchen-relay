@@ -6,7 +6,8 @@
   "scripts": {
     "test": "node --test",
     "start": "node server.js",
-    "agent:run": "node agent-runner.js"
+    "agent:run": "node agent-runner.js",
+    "agent:study": "node agent-runner.js runner.study.config.json"
   },
   "keywords": [],
   "author": "",

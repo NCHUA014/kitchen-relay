@@ -6,6 +6,7 @@
   const summary = document.getElementById('observer-summary');
   const tickets = document.getElementById('observer-tickets');
   const map = document.getElementById('observer-map');
+  const lastAction = document.getElementById('observer-last-action');
   const events = document.getElementById('observer-events');
   const researchPanel = document.getElementById('research-panel');
   const agentPanelMirror = document.getElementById('agent-panel-mirror');
@@ -31,6 +32,7 @@
     const who = event.playerName || 'Agent';
     if (event.type === 'move') return `${who} moved to (${event.gc}, ${event.gr}).`;
     if (event.type === 'pivot') return `${who} turned to face (${event.dir?.x}, ${event.dir?.y}).`;
+    if (event.type === 'bridge-carried') return `The moving bridge carried ${who} from row ${event.fromRow} to row ${event.toRow}.`;
     if (event.type === 'command') return `${who} sent a ${String(event.command || 'game').replaceAll('-', ' ')} command.`;
     if (event.type === 'stage-reset') return `The server reset the physical kitchen for Stage ${event.stageId}.`;
     return String(event.type || 'server event').replaceAll('-', ' ');
@@ -46,8 +48,34 @@
     payload.map.forEach((row, r) => row.forEach((tile, c) => {
       const cell = document.createElement('div'); cell.className = `observer-cell ${tile.type}`;
       cell.textContent = occupants.get(`${c},${r}`) || glyph[tile.type] || '';
+      const activePlayer = payload.players.find(player => player.position.c === c && player.position.r === r);
+      if (activePlayer) {
+        cell.textContent = '🟢';
+        cell.classList.add('observer-player');
+        if (payload.activeHolding) {
+          const held = document.createElement('span'); held.className = 'observer-held';
+          held.textContent = payload.activeHolding.kind === 'plate'
+            ? `🍽️${payload.activeHolding.contents.map(item => glyphForItem(item.item)).join('')}`
+            : glyphForItem(payload.activeHolding.item?.item);
+          cell.append(held);
+        }
+      }
       cell.title = `${c},${r}: ${tile.type}`; map.append(cell);
     }));
+  }
+  function describeAction(actionRecord) {
+    const action = actionRecord?.action;
+    if (!action) return 'Waiting for an agent action.';
+    const keys = { up: 'W', left: 'A', down: 'S', right: 'D' };
+    let description;
+    if (action.action === 'move') description = `${keys[action.direction] || '?'} — move ${action.direction || 'unknown'}`;
+    else if (action.action === 'interact') description = 'E — interact';
+    else if (action.action === 'throw') description = 'Q — throw / drop';
+    else if (action.action === 'serve') description = 'Space — serve';
+    else if (action.action === 'runMacro') description = `${String(action.shortcut || '?').toUpperCase()} — run macro`;
+    else description = action.action;
+    if (actionRecord.step?.outcome && actionRecord.step.outcome !== 'succeeded') description += ` (${actionRecord.step.outcome})`;
+    return `${actionRecord.brand || 'Agent'}: ${description}`;
   }
   function drawTickets(payload) {
     tickets.replaceChildren();
@@ -110,8 +138,10 @@
     const held = payload.activeHolding?.kind === 'plate'
       ? `🍽️ ${payload.activeHolding.contents.map(item => glyphForItem(item.item)).join(' ') || 'empty'}`
       : payload.activeHolding ? glyphForItem(payload.activeHolding.item?.item) : 'Nothing';
-    summary.replaceChildren(card('Kitchen', payload.roomId), card('Status', payload.status), card('Stage', `Stage ${payload.stage}`), card('Agent', turnLabel), card('Holding', held), card('Customer feedback', payload.customerMessage || 'Waiting for an order.'), card('Turn remaining', payload.turn ? formatTime(payload.turn.remainingMs) : '—'), card('Score', payload.score), card('Missed', payload.missed));
+    const keys = payload.keystrokes || { manual: 0, macros: 0, total: 0 };
+    summary.replaceChildren(card('Kitchen', payload.roomId), card('Status', payload.status), card('Stage', `Stage ${payload.stage}`), card('Agent', turnLabel), card('Holding', held), card('Keystrokes · 55%', `${keys.total} total · ${keys.manual} manual · ${keys.macros} macro`), card('Customer feedback', payload.customerMessage || 'Waiting for an order.'), card('Turn remaining', payload.turn ? formatTime(payload.turn.remainingMs) : '—'), card('Score · 45%', payload.score), card('Completed tickets', payload.completedTickets || 0), card('Missed', payload.missed));
     drawTickets(payload); drawMap(payload);
+    lastAction.replaceChildren(); const actionLabel = document.createElement('strong'); actionLabel.textContent = 'Last key'; lastAction.append(actionLabel, document.createTextNode(describeAction(payload.lastAgentAction)));
     events.textContent = payload.events.map(event => `${new Date(event.at).toLocaleTimeString()}  ${describeEvent(event)}`).join('\n') || 'No game events yet.';
     drawResearchPanel(payload, selectedPanel); data.classList.remove('hidden');
     drawAgentPanelMirror(payload);
@@ -123,6 +153,13 @@
       const response = await fetch(`/api/researcher/experiments/${encodeURIComponent(id)}`, { headers: { 'x-researcher-token': token.value } });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Unable to observe experiment.');
+      if (payload.status === 'waiting') {
+        const start = await fetch(`/api/researcher/experiments/${encodeURIComponent(id)}/start`, { method: 'POST', headers: { 'x-researcher-token': token.value } });
+        const started = await start.json();
+        if (!start.ok) throw new Error(started.error || 'Unable to start experiment.');
+        status.textContent = `Started ${id}; observing live updates.`;
+        return load();
+      }
       render(payload);
     } catch (error) { status.textContent = error.message; data.classList.add('hidden'); }
   }

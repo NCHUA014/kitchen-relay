@@ -56,7 +56,7 @@ function hashSeed(value) {
 
 class GameEngine {
   createRoom(id) {
-    return { id, players: [], notepad: { text: '', author: null, updatedAt: null, revision: 0 }, macros: [], researcherPanel: null, score: 0, missed: 0, buns: [], nextBunId: 1, ingredients: [], nextIngredientId: 1, plates: [], nextPlateId: 1, tickets: [], nextTicketAt: null, ticketSequenceIndex: 0, stage: 1, stageStartedAt: Date.now(), customerMessage: '', status: 'waiting', hostId: null, activePlayerIds: [], schedule: [], timer: null, eventLog: [], rngState: hashSeed(id) };
+    return { id, players: [], notepad: { text: '', author: null, updatedAt: null, revision: 0 }, macros: [], researcherPanel: null, score: 0, completedTickets: 0, missed: 0, buns: [], nextBunId: 1, ingredients: [], nextIngredientId: 1, plates: [], nextPlateId: 1, tickets: [], nextTicketAt: null, ticketSequenceIndex: 0, stage: 1, stageStartedAt: Date.now(), customerMessage: '', status: 'waiting', hostId: null, activePlayerIds: [], schedule: [], timer: null, eventLog: [], rngState: hashSeed(id) };
   }
 
   map(room, now) { return stageMap(room.stage, room, now); }

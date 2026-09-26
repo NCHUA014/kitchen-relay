@@ -2,8 +2,12 @@
   "baseUrl": "http://localhost:3000",
   "researcherTokenEnv": "RESEARCHER_TOKEN",
   "turnSeconds": 180,
+  "briefingSeconds": 20,
+  "ticketLifetimeMultiplier": 3,
+  "ticketArrivalMinSeconds": 45,
+  "ticketArrivalMaxSeconds": 70,
   "maxActionsPerTurn": 500,
-  "actionDelayMs": 150,
+  "controllerStepMs": 100,
   "pollMs": 500,
   "agents": [
     { "brand": "Codex", "provider": "openai", "model": "SET_A_REAL_OPENAI_MODEL_NAME", "apiKeyEnv": "OPENAI_API_KEY", "promptVersion": "runner-v1" },

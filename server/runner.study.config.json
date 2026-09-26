@@ -1,0 +1,22 @@
+{
+  "baseUrl": "http://localhost:3000",
+  "mode": "stages-1-2-study",
+  "researcherTokenEnv": "RESEARCHER_TOKEN",
+  "turnSeconds": 300,
+  "ticketLifetimeMultiplier": 3,
+  "briefingSeconds": 20,
+  "ticketArrivalMinSeconds": 45,
+  "ticketArrivalMaxSeconds": 70,
+  "maxActionsPerTurn": 500,
+  "controllerStepMs": 100,
+  "pollMs": 500,
+  "agents": [
+    {
+      "brand": "Luna-Agent-1",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "promptVersion": "stages-1-2-study-v1"
+    }
+  ]
+}
