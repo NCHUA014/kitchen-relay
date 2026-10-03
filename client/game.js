@@ -75,6 +75,18 @@
   const ingredientColors = {
     tomato: '#c1443c', lettuce: '#7fb069', pickle: '#779c43', bun: '#d9a05b', patty: '#6b3f2a', chicken: '#e8b18a'
   };
+  const ingredientSprites = {};
+  [
+    ['chicken', 'assets/raw-chicken.png'],
+    ['burnt-chicken', 'assets/burnt-chicken.png'],
+    ['tomato', 'assets/sliced-tomato.png'],
+    ['lettuce', 'assets/sliced-lettuce.png'],
+  ].forEach(([item, source]) => {
+    const image = new Image();
+    image.src = source;
+    image.onload = () => draw();
+    ingredientSprites[item] = image;
+  });
 
   // ---------- Player ----------
   // The player now occupies a single grid cell (gc, gr) and steps one square
@@ -110,7 +122,7 @@
   function applySharedIngredients(ingredients) {
     sharedIngredients = Array.isArray(ingredients) ? ingredients : [];
     const mine = sharedIngredients.find(item => item.holderId === window.kitchenSession?.state?.you);
-    if (mine && (!player.holding || player.holding.sharedIngredient)) player.holding = { kind: 'ingredient', item: mine.item, chopped: mine.chopped, cookedSides: mine.cookedSides, sharedIngredient: true, sharedItemId: mine.id };
+    if (mine && (!player.holding || player.holding.sharedIngredient)) player.holding = { kind: 'ingredient', item: mine.item, chopped: mine.chopped, cooked: mine.cooked, burnt: mine.burnt, sharedIngredient: true, sharedItemId: mine.id };
     if (!mine && player.holding?.sharedIngredient) player.holding = null;
     publishPlayerState();
   }
@@ -137,6 +149,16 @@
 
   window.addEventListener('keydown', e => {
     if (e.target.matches('textarea, input, button') || !notesModal.classList.contains('hidden') || !macroModal.classList.contains('hidden')) return;
+    const pivotDirections = { w: [0, -1], a: [-1, 0], s: [0, 1], d: [1, 0] };
+    const pivotKey = e.key.toLowerCase();
+    if (e.shiftKey && pivotDirections[pivotKey]) {
+      e.preventDefault();
+      if (e.repeat) return;
+      const [x, y] = pivotDirections[pivotKey];
+      player.dir = { x, y };
+      if (window.kitchenSession?.connected) window.kitchenSession.send({ type: 'player-pivot', dir: player.dir });
+      return;
+    }
     keys[e.key.toLowerCase()] = true;
     if (e.key === ' ') e.preventDefault();
   });
@@ -179,6 +201,7 @@
   function saveNotepad() {
     const text = notepadEditor.value.trim();
     if (text === (notepad.text || '')) { noteStatus.textContent = 'Nothing changed, so there is nothing to save.'; return; }
+    if (window.kitchenSession?.connected) notesModal.classList.add('hidden');
     if (window.kitchenSession?.connected) { window.kitchenSession.send({ type: 'notepad-save', text }); noteStatus.textContent = 'Saving handover document…'; return; }
     notepad = { text, author: 'Player 1', updatedAt: Date.now(), revision: (notepad.revision || 0) + 1 };
     localStorage.setItem('kitchen-relay-notepad', JSON.stringify(notepad)); noteStatus.textContent = 'Saved for the next player.'; renderNotepad();
@@ -261,8 +284,12 @@
   }
 
   document.getElementById('notesBtn').addEventListener('click', openNotepad);
-  document.getElementById('closeNotesBtn').addEventListener('click', () => notesModal.classList.add('hidden'));
-  notesModal.addEventListener('click', e => { if (e.target === notesModal) notesModal.classList.add('hidden'); });
+  function closeNotepad() {
+    notesModal.classList.add('hidden');
+    if (window.kitchenSession?.connected) window.kitchenSession.send({ type: 'notepad-close' });
+  }
+  document.getElementById('closeNotesBtn').addEventListener('click', closeNotepad);
+  notesModal.addEventListener('click', e => { if (e.target === notesModal) closeNotepad(); });
   document.getElementById('saveNoteBtn').addEventListener('click', saveNotepad);
   window.addEventListener('kitchen-room-state', event => {
     serverClockOffset = Number(event.detail.serverNow || Date.now()) - Date.now();
@@ -294,7 +321,7 @@
 
   // ---------- Persistent action macros ----------
   const MACRO_STORAGE_KEY = 'kitchen-relay-macros';
-  const MACRO_ACTIONS = new Set(['w', 'a', 's', 'd', 'q', 'e', ' ']);
+  const MACRO_ACTIONS = new Set(['w', 'a', 's', 'd', "w'", "a'", "s'", "d'", 'q', 'e', ' ']);
   const MACRO_SHORTCUTS = 'abcdefghijklmnopqrstuvwxyz'.split('');
   const RESERVED_MACRO_SHORTCUTS = new Set(['w', 'a', 's', 'd', 'q', 'e']);
   const macroModal = document.getElementById('macro-modal');
@@ -439,7 +466,12 @@
     const nextAction = () => {
       if (!running || index >= sequence.length) { finish(); return; }
       const action = sequence[index++];
-      if (action === 'w' || action === 'a' || action === 's' || action === 'd') {
+      if (["w'", "a'", "s'", "d'"].includes(action)) {
+        const directions = { "w'": [0, -1], "a'": [-1, 0], "s'": [0, 1], "d'": [1, 0] };
+        const [x, y] = directions[action];
+        player.dir = { x, y };
+        if (window.kitchenSession?.connected) window.kitchenSession.send({ type: 'player-pivot', dir: player.dir });
+      } else if (action === 'w' || action === 'a' || action === 's' || action === 'd') {
         const directions = { w: [0, -1], a: [-1, 0], s: [0, 1], d: [1, 0] };
         const [dc, dr] = directions[action];
         player.dir = { x: dc, y: dr };
@@ -463,12 +495,13 @@
     e.preventDefault();
     if (!macroNameInput.value.trim()) { macroRecordingStatus.textContent = 'Enter a macro name first.'; return; }
     macroCreationStage = 'record'; macroNameInput.blur(); renderPendingMacro();
-    macroRecordingStatus.textContent = 'Editing sequence: use W, A, S, D, Q, E, or Space. Use arrow keys to move the cursor; press Enter when done.';
+    macroRecordingStatus.textContent = "Editing sequence: use W, A, S, D, Q, E, or Space. Shift+W/A/S/D records a turn-only W'/A'/S'/D' pivot. Use arrow keys to move the cursor; press Enter when done.";
   });
   window.addEventListener('keydown', e => {
     if (macroModal.classList.contains('hidden') || e.repeat || e.target.matches('textarea, input, button')) return;
     if (macroCreationStage === 'record') {
-      const action = e.key.toLowerCase();
+      const rawKey = e.key.toLowerCase();
+      const action = e.shiftKey && ['w', 'a', 's', 'd'].includes(rawKey) ? `${rawKey}'` : rawKey;
       const nestedMacro = macros.find(macro => macro.shortcut === action);
       if (nestedMacro) {
         e.preventDefault();
@@ -615,11 +648,14 @@
     el.innerHTML = '';
     tickets.forEach(t => {
       const remaining = t.expiresAt ? Math.max(0, (t.expiresAt - Date.now()) / 1000) : t.remaining;
-      const pct = Math.max(0, remaining / t.time) * 100;
+      const pct = Math.min(100, Math.max(0, remaining / t.time) * 100);
       const div = document.createElement('div');
       div.className = 'ticket';
       const displayedIngredients = t.displayNeeds || t.needs || [];
-      const ingredientLine = activeStageId >= 3 ? '' : `<div>${displayedIngredients.join(' + ')}</div>`;
+      const ticketText = t.kind === 'handover'
+        ? displayedIngredients.join(' ') || 'Observe environment carefully and give sufficient notes and macros for smooth handover to next agent.'
+        : displayedIngredients.join(' + ') || 'Recipe: hidden';
+      const ingredientLine = `<div>${ticketText}</div>`;
       div.innerHTML = `<div class="name">${t.name}</div>
         ${ingredientLine}
         <div class="bar-bg"><div class="bar-fill" style="width:${pct}%; background:${pct < 30 ? 'var(--bad)' : 'var(--good)'}"></div></div>`;
@@ -882,14 +918,38 @@
       ctx.beginPath(); ctx.arc(cx, cy - yOffset, 8, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5; ctx.stroke();
       itemObj.contents.forEach((c, i) => {
-        ctx.fillStyle = ingredientColors[typeof c === 'string' ? c : c.item] || '#fff';
-        ctx.beginPath(); ctx.arc(cx - 4 + i * 4, cy - yOffset, 2.5, 0, Math.PI * 2); ctx.fill();
+        const content = typeof c === 'string' ? { item: c } : c;
+        const contentSprite = content.item === 'chicken' && content.burnt
+          ? ingredientSprites['burnt-chicken']
+          : ['tomato', 'lettuce'].includes(content.item) && content.chopped ? ingredientSprites[content.item] : null;
+        const contentX = cx - 4 + i * 4;
+        if (contentSprite?.complete && contentSprite.naturalWidth) {
+          ctx.drawImage(contentSprite, contentX - 4, cy - yOffset - 4, 8, 8);
+        } else {
+          ctx.fillStyle = ingredientColors[content.item] || '#fff';
+          ctx.beginPath(); ctx.arc(contentX, cy - yOffset, 2.5, 0, Math.PI * 2); ctx.fill();
+        }
       });
     } else {
-      ctx.fillStyle = ingredientColors[itemObj.item] || '#fff';
-      ctx.beginPath(); ctx.arc(cx, cy - yOffset, 8, 0, Math.PI * 2); ctx.fill();
-      if (itemObj.chopped || (itemObj.cookedSides || 0) > 0) {
-        ctx.strokeStyle = itemObj.cookedSides >= 2 ? '#3f261b' : '#f2e6d5';
+      const burntChicken = itemObj.item === 'chicken' && itemObj.burnt;
+      const rawChicken = itemObj.item === 'chicken' && !itemObj.cooked && !burntChicken;
+      const cookedChicken = itemObj.item === 'chicken' && itemObj.cooked && !burntChicken;
+      const slicedVegetable = ['tomato', 'lettuce'].includes(itemObj.item) && itemObj.chopped;
+      const sprite = burntChicken ? ingredientSprites['burnt-chicken'] : (rawChicken || slicedVegetable) ? ingredientSprites[itemObj.item] : null;
+      if (cookedChicken) {
+        ctx.save();
+        ctx.font = '20px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('🍗', cx, cy - yOffset);
+        ctx.restore();
+      } else if (sprite?.complete && sprite.naturalWidth) {
+        const size = 31;
+        ctx.drawImage(sprite, cx - size / 2, cy - yOffset - size / 2, size, size);
+      } else {
+        ctx.fillStyle = ingredientColors[itemObj.item] || '#fff';
+        ctx.beginPath(); ctx.arc(cx, cy - yOffset, 8, 0, Math.PI * 2); ctx.fill();
+      }
+      if (!cookedChicken && itemObj.chopped) {
+        ctx.strokeStyle = '#f2e6d5';
         ctx.lineWidth = 2; ctx.stroke();
       }
       if (itemObj.processEndsAt && itemObj.processStartedAt) {
@@ -954,9 +1014,15 @@
     if (cell.type.startsWith('crate_')) {
       const ing = cell.type.split('_')[1];
       const crateEmoji = { tomato: '🍅', lettuce: '🥬', pickle: '🥒', chicken: '🍗', bun: '🍔' }[ing] || '•';
-      ctx.font = '24px sans-serif';
-      ctx.fillStyle = '#fff';
-      ctx.fillText(crateEmoji, cx, cy);
+      const rawChickenSprite = ing === 'chicken' && activeStageId >= 2 ? ingredientSprites.chicken : null;
+      if (rawChickenSprite?.complete && rawChickenSprite.naturalWidth) {
+        const size = 34;
+        ctx.drawImage(rawChickenSprite, cx - size / 2, cy - size / 2, size, size);
+      } else {
+        ctx.font = '24px sans-serif';
+        ctx.fillStyle = '#fff';
+        ctx.fillText(crateEmoji, cx, cy);
+      }
       ctx.fillStyle = '#f2e6d5';
       if (!labelsHidden) ctx.fillText(ing[0].toUpperCase(), cx, cy + CELL/2 - 8);
     } else if (cell.type === 'board') {
@@ -985,9 +1051,9 @@
         ctx.fillText('chopped', cx, cy - 26);
       }
       if (cell.type === 'stove' && cell.item.kind === 'ingredient') {
-        const done = performance.now() - (cell.item.cookStart || 0) > 1500;
+        const done = Boolean(cell.item.cooked);
         ctx.fillStyle = '#2a1f18'; ctx.font = '9px monospace';
-        ctx.fillText(done ? 'done' : 'cooking', cx, cy - 26);
+        ctx.fillText(cell.item.burnt ? 'burnt' : done ? 'done' : 'cooking', cx, cy - 26);
       }
     }
   }

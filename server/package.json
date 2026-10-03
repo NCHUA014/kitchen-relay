@@ -7,7 +7,8 @@
     "test": "node --test",
     "start": "node server.js",
     "agent:run": "node agent-runner.js",
-    "agent:study": "node agent-runner.js runner.study.config.json"
+    "agent:study": "node agent-runner.js runner.study.config.json",
+    "agent:study:stage3": "node agent-runner.js runner.stages-1-3.config.json"
   },
   "keywords": [],
   "author": "",

@@ -6,11 +6,11 @@ const TURN_PLAN = [
 
 const STAGE_ONE_RECIPES = [
   { name: 'Garden Salad', needs: ['tomato', 'lettuce'], displayNeeds: ['tomato', 'lettuce'], points: 70, time: 42 },
-  { name: 'Vegan Burger', needs: ['bun', 'tomato', 'lettuce'], displayNeeds: ['garden salad', 'bun'], points: 90, time: 48 },
+  { name: 'Vegan Burger', needs: ['bun', 'tomato', 'lettuce'], displayNeeds: ['bun', 'garden salad'], points: 90, time: 48 },
 ];
 const STAGE_TWO_RECIPES = [
-  { name: 'Garden Salad', needs: ['tomato', 'lettuce'], displayNeeds: [], points: 70, time: 42 },
-  { name: 'Vegan Burger', needs: ['bun', 'tomato', 'lettuce'], displayNeeds: [], points: 90, time: 48 },
+  { name: 'Garden Salad', needs: ['tomato', 'lettuce'], displayNeeds: ['tomato', 'lettuce'], points: 70, time: 42 },
+  { name: 'Vegan Burger', needs: ['bun', 'tomato', 'lettuce'], displayNeeds: ['bun', 'garden salad'], points: 90, time: 48 },
   { name: 'Chicken Burger', needs: ['bun', 'chicken', 'tomato', 'lettuce'], displayNeeds: ['vegan burger', 'grilled chicken'], points: 120, time: 55 },
 ];
 const STAGE_FIVE_RECIPES = STAGE_TWO_RECIPES.map(recipe => ({ ...recipe, needs: recipe.needs.map(item => item === 'lettuce' ? 'pickle' : item) }));
@@ -24,10 +24,11 @@ const STAGES = {
 
 const COLS = 17;
 const ROWS = 10;
+const BRIDGE_DWELL_MS = 5000;
 
 function bridgeRow(room, now = Date.now()) {
   if (room.stage !== 4 && room.stage !== 5) return null;
-  return [3, 4, 5, 6, 7, 6, 5, 4][Math.floor(Math.max(0, now - room.stageStartedAt) / 2000) % 8];
+  return [3, 4, 5, 6, 7, 6, 5, 4][Math.floor(Math.max(0, now - room.stageStartedAt) / BRIDGE_DWELL_MS) % 8];
 }
 
 function stageMap(stageId, room, now = Date.now()) {
@@ -56,7 +57,7 @@ function hashSeed(value) {
 
 class GameEngine {
   createRoom(id) {
-    return { id, players: [], notepad: { text: '', author: null, updatedAt: null, revision: 0 }, macros: [], researcherPanel: null, score: 0, completedTickets: 0, missed: 0, buns: [], nextBunId: 1, ingredients: [], nextIngredientId: 1, plates: [], nextPlateId: 1, tickets: [], nextTicketAt: null, ticketSequenceIndex: 0, stage: 1, stageStartedAt: Date.now(), customerMessage: '', status: 'waiting', hostId: null, activePlayerIds: [], schedule: [], timer: null, eventLog: [], rngState: hashSeed(id) };
+    return { id, players: [], notepad: { text: '', author: null, updatedAt: null, revision: 0 }, macros: [], researcherPanel: null, score: 0, completedTickets: 0, missed: 0, buns: [], nextBunId: 1, ingredients: [], nextIngredientId: 1, plates: [], nextPlateId: 1, tickets: [], nextTicketAt: null, ticketSequenceIndex: 0, issuedRecipeNames: [], handoverTicketShown: false, stage: 1, stageStartedAt: Date.now(), customerMessage: '', status: 'waiting', hostId: null, activePlayerIds: [], schedule: [], timer: null, eventLog: [], rngState: hashSeed(id) };
   }
 
   map(room, now) { return stageMap(room.stage, room, now); }
@@ -80,7 +81,11 @@ class GameEngine {
     return true;
   }
   resetStage(room, stageId, now = Date.now()) {
-    room.stage = stageId; room.stageStartedAt = now; room.buns = []; room.ingredients = []; room.plates = []; room.tickets = []; room.nextTicketAt = now + 5000; room.ticketSequenceIndex = 0;
+    room.stage = stageId; room.stageStartedAt = now;
+    // Physical state and performance are measured independently for every
+    // stage. Shared cultural knowledge deliberately lives outside this reset.
+    room.score = 0; room.completedTickets = 0; room.missed = 0;
+    room.buns = []; room.ingredients = []; room.plates = []; room.tickets = []; room.nextTicketAt = now + 5000; room.ticketSequenceIndex = 0; room.issuedRecipeNames = []; room.handoverTicketShown = false;
     room.customerMessage = stageId >= 2 ? 'A new customer is waiting.' : '';
     this.record(room, 'stage-reset', { stageId });
   }
@@ -89,8 +94,8 @@ class GameEngine {
       const sequence = [STAGE_ONE_RECIPES[0], STAGE_ONE_RECIPES[0], STAGE_ONE_RECIPES[1], STAGE_ONE_RECIPES[1]];
       if (room.ticketSequenceIndex < sequence.length) return sequence[room.ticketSequenceIndex++];
     }
-    if (room.stage === 2) {
-      const sequence = [STAGE_TWO_RECIPES[0], STAGE_TWO_RECIPES[0], STAGE_TWO_RECIPES[1], STAGE_TWO_RECIPES[1], STAGE_TWO_RECIPES[2]];
+    if (room.stage === 2 || room.stage === 3) {
+      const sequence = [STAGE_TWO_RECIPES[0], STAGE_TWO_RECIPES[1], STAGE_TWO_RECIPES[2]];
       if (room.ticketSequenceIndex < sequence.length) return sequence[room.ticketSequenceIndex++];
     }
     room.rngState = (Math.imul(room.rngState, 1664525) + 1013904223) >>> 0;

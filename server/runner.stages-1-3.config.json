@@ -1,0 +1,53 @@
+{
+  "baseUrl": "http://localhost:3000",
+  "mode": "stages-1-3-study",
+  "researcherTokenEnv": "RESEARCHER_TOKEN",
+  "turnSeconds": 600,
+  "turnSecondsByStage": {
+    "1": 420,
+    "2": 1020,
+    "3": 1080
+  },
+  "handoverSecondsByStage": {
+    "2": 120,
+    "3": 180
+  },
+  "ticketLifetimeMultiplier": 3,
+  "guidedTicketPhaseByStage": {
+    "2": {
+      "sequentialTicketLifetimesSeconds": [210, 180, 210]
+    },
+    "3": {
+      "sequentialTicketLifetimesSeconds": [210, 180, 210]
+    }
+  },
+  "briefingSeconds": 20,
+  "ticketArrivalMinSeconds": 45,
+  "ticketArrivalMaxSeconds": 70,
+  "ticketArrivalByStage": {
+    "1": { "minSeconds": 25, "maxSeconds": 35 },
+    "3": { "minSeconds": 70, "maxSeconds": 70 }
+  },
+  "ticketLifetimeSecondsByStage": {
+    "3": { "Garden Salad": 150, "Vegan Burger": 180, "Chicken Burger": 270 }
+  },
+  "maxActionsPerTurn": 1500,
+  "controllerStepMs": 75,
+  "pollMs": 500,
+  "agents": [
+    {
+      "brand": "Luna-Agent-1",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "promptVersion": "stages-1-3-agent-1-v1"
+    },
+    {
+      "brand": "Luna-Agent-2",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "promptVersion": "stages-1-3-agent-2-v1"
+    }
+  ]
+}

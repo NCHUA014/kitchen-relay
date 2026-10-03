@@ -101,14 +101,40 @@ if (!migrationThree) {
   db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(3, new Date().toISOString());
 }
 
+const migrationFour = db.prepare('SELECT 1 FROM schema_migrations WHERE version = 4').get();
+if (!migrationFour) {
+  db.exec(`
+    ALTER TABLE turns ADD COLUMN completed_tickets_at_start INTEGER;
+    ALTER TABLE turns ADD COLUMN completed_tickets_at_end INTEGER;
+  `);
+  db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(4, new Date().toISOString());
+}
+
+const migrationFive = db.prepare('SELECT 1 FROM schema_migrations WHERE version = 5').get();
+if (!migrationFive) {
+  db.exec(`
+    CREATE TABLE react_trail_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      experiment_id TEXT NOT NULL REFERENCES experiments(experiment_id),
+      turn_id INTEGER REFERENCES turns(id),
+      agent_id INTEGER NOT NULL,
+      stage INTEGER NOT NULL,
+      recorded_at TEXT NOT NULL,
+      summary TEXT NOT NULL
+    );
+    CREATE INDEX idx_react_trail_entries_turn_time ON react_trail_entries(turn_id, recorded_at);
+  `);
+  db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(5, new Date().toISOString());
+}
+
 const statements = {
   insertExperiment: db.prepare('INSERT INTO experiments (experiment_id, room_id, environment, created_at, status, stage, score, missed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
   insertAgent: db.prepare('INSERT INTO agents (experiment_id, agent_id, brand) VALUES (?, ?, ?)'),
   insertTurn: db.prepare('INSERT INTO turns (experiment_id, agent_id, stage, sequence, starts_at, ends_at, status) VALUES (?, ?, ?, ?, ?, ?, ?)'),
   updateExperiment: db.prepare('UPDATE experiments SET status = ?, stage = ?, score = ?, missed = ?, finalised_at = ? WHERE experiment_id = ?'),
   updateTurn: db.prepare('UPDATE turns SET status = ? WHERE experiment_id = ? AND agent_id = ? AND stage = ?'),
-  activateTurn: db.prepare('UPDATE turns SET status = ?, score_at_start = ?, missed_at_start = ? WHERE experiment_id = ? AND agent_id = ? AND stage = ?'),
-  endTurn: db.prepare('UPDATE turns SET status = ?, score_at_end = ?, missed_at_end = ? WHERE experiment_id = ? AND agent_id = ? AND stage = ?'),
+  activateTurn: db.prepare('UPDATE turns SET status = ?, starts_at = ?, ends_at = ?, score_at_start = ?, completed_tickets_at_start = ?, missed_at_start = ? WHERE experiment_id = ? AND agent_id = ? AND stage = ?'),
+  endTurn: db.prepare('UPDATE turns SET status = ?, score_at_end = ?, completed_tickets_at_end = ?, missed_at_end = ? WHERE experiment_id = ? AND agent_id = ? AND stage = ?'),
   setFirstServe: db.prepare('UPDATE turns SET first_successful_serve_at = COALESCE(first_successful_serve_at, ?) WHERE experiment_id = ? AND agent_id = ? AND stage = ?'),
   findTurn: db.prepare('SELECT id FROM turns WHERE experiment_id = ? AND agent_id = ? AND stage = ?'),
   insertEvent: db.prepare('INSERT INTO agent_events (experiment_id, agent_id, brand, occurred_at, kind, payload_json) VALUES (?, ?, ?, ?, ?, ?)'),
@@ -118,6 +144,7 @@ const statements = {
   insertMacroRevision: db.prepare('INSERT INTO macro_revisions (experiment_id, turn_id, agent_id, stage, macro_id, macro_name, shortcut, sequence_json, event_kind, finalised_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
   insertMacroRun: db.prepare('INSERT INTO macro_runs (experiment_id, turn_id, agent_id, stage, macro_id, macro_name, shortcut, used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
   finishMacroRun: db.prepare('UPDATE macro_runs SET ended_at = ?, blocked = ? WHERE id = ?'),
+  insertReactTrailEntry: db.prepare('INSERT INTO react_trail_entries (experiment_id, turn_id, agent_id, stage, recorded_at, summary) VALUES (?, ?, ?, ?, ?, ?)'),
   upsertAgentConfiguration: db.prepare('INSERT OR REPLACE INTO agent_configurations (experiment_id, agent_id, provider, model, temperature, prompt_version, configured_at) VALUES (?, ?, ?, ?, ?, ?, ?)'),
 };
 
@@ -138,8 +165,8 @@ function saveRoom(experiment, room) {
 
 function saveTurnStatus(experiment, turn, status) { statements.updateTurn.run(status, experiment, turn.playerId, turn.stageId); }
 function turnId(experiment, agentId, stage) { return statements.findTurn.get(experiment, agentId, stage)?.id || null; }
-function activateTurn(experiment, turn, room) { statements.activateTurn.run('active', room.score, room.missed, experiment, turn.playerId, turn.stageId); }
-function endTurn(experiment, turn, room) { statements.endTurn.run('ended', room.score, room.missed, experiment, turn.playerId, turn.stageId); }
+function activateTurn(experiment, turn, room) { statements.activateTurn.run('active', iso(turn.startAt), iso(turn.endAt), room.score, room.completedTickets, room.missed, experiment, turn.playerId, turn.stageId); }
+function endTurn(experiment, turn, room) { statements.endTurn.run('ended', room.score, room.completedTickets, room.missed, experiment, turn.playerId, turn.stageId); }
 function saveFirstSuccessfulServe(experiment, player, stage, at = Date.now()) { statements.setFirstServe.run(iso(at), experiment, player.id, stage); }
 
 function saveAgentEvent(event) {
@@ -167,8 +194,11 @@ function startMacroRun(experiment, player, stage, macro, at = Date.now()) {
 }
 
 function finishMacroRun(id, blocked, at = Date.now()) { statements.finishMacroRun.run(iso(at), blocked ? 1 : 0, id); }
+function saveReactTrailEntry(experiment, player, stage, summary, recordedAt) {
+  statements.insertReactTrailEntry.run(experiment, turnId(experiment, player.id, stage), player.id, stage, recordedAt || iso(), summary);
+}
 function saveAgentConfiguration(experiment, player, configuration) {
   statements.upsertAgentConfiguration.run(experiment, player.id, configuration.provider, configuration.model, configuration.temperature, configuration.promptVersion, iso());
 }
 
-module.exports = { environment, filePath, createExperiment, saveTurns, saveRoom, saveTurnStatus, activateTurn, endTurn, saveFirstSuccessfulServe, saveAgentEvent, saveKnowledge, saveTicketEvent, saveNotepadRevision, saveMacroRevision, startMacroRun, finishMacroRun, saveAgentConfiguration };
+module.exports = { environment, filePath, createExperiment, saveTurns, saveRoom, saveTurnStatus, activateTurn, endTurn, saveFirstSuccessfulServe, saveAgentEvent, saveKnowledge, saveTicketEvent, saveNotepadRevision, saveMacroRevision, startMacroRun, finishMacroRun, saveReactTrailEntry, saveAgentConfiguration };

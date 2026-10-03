@@ -1,2 +1,3 @@
 server/runner.config.json
 server/runs/
+server/data/*.sqlite
